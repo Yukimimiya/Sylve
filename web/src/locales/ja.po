@@ -421,59 +421,59 @@ msgstr "Cloud-Init テンプレート"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Basic Settings - ZFS Pools"
-msgstr "Basic Settings - ZFS Pools"
+msgstr "基本設定 - ZFS プール"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Toggle - DHCP Server"
-msgstr "Toggle - DHCP Server"
+msgstr "切り替え - DHCP サーバ"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Toggle - WoL Server"
-msgstr "Toggle - WoL Server"
+msgstr "切り替え - WoL サーバ"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Toggle - Samba Server"
-msgstr "Toggle - Samba Server"
+msgstr "切り替え - Samba サーバ"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Toggle - Jails"
-msgstr "Toggle - Jails"
+msgstr "切り替え - Jails"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Toggle - Virtualization"
-msgstr "Toggle - Virtualization"
+msgstr "切り替え - 仮想化"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "DC Notes"
-msgstr "DC Notes"
+msgstr "DC ノート"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Cluster - Reset Node"
-msgstr "Cluster - Reset Node"
+msgstr "クラスタ - ノードをリセット"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "DC Backup Target - Validate"
-msgstr "DC Backup Target - Validate"
+msgstr "DC 対象をバックアップ - 検証"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "DC Backup Target"
-msgstr "DC Backup Target"
+msgstr "DC 対象をバックアップ"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "DC Backup Job - Run"
-msgstr "DC Backup Job - Run"
+msgstr "DC 対象をバックアップ - 実行"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "DC Backup Job"
-msgstr "DC Backup Job"
+msgstr "DC バックアップジョブ"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Unknown VM"
-msgstr "Unknown VM"
+msgstr "未知の VM"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Login - Create"
-msgstr "Login - Create"
+msgstr "ログイン - 作成"
 
 #: src/lib/components/custom/DataCenter/Replication/Activity.svelte
 #: src/lib/components/skeleton/BottomPanel.svelte
@@ -481,44 +481,44 @@ msgstr "Login - Create"
 #: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 msgid "Started"
-msgstr "Started"
+msgstr "開始"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Bad Request"
-msgstr "Bad Request"
+msgstr "不正なリクエスト"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 #: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 msgid "Error"
-msgstr "Error"
+msgstr "エラー"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Start Time"
-msgstr "Start Time"
+msgstr "開始時間"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "End Time"
-msgstr "End Time"
+msgstr "終了時間"
 
 #: src/lib/components/custom/Jail/Create/Basic.svelte
 #: src/lib/components/custom/VM/Create/Basic.svelte
 #: src/lib/components/skeleton/BottomPanel.svelte
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Node"
-msgstr "Node"
+msgstr "ノード"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 #: src/routes/[node]/settings/authentication/users/+page.svelte
 msgid "User"
-msgstr "User"
+msgstr "ユーザー"
 
 #: src/lib/components/custom/Authentication/Passkeys.svelte
 #: src/lib/components/skeleton/BottomPanel.svelte
 #: src/routes/[node]/storage/samba/audit-logs/+page.svelte
 msgid "Action"
-msgstr "Action"
+msgstr "アクション"
 
 #: src/lib/components/custom/VM/Hardware/VNC.svelte
 #: src/lib/components/skeleton/BottomPanel.svelte
@@ -537,15 +537,15 @@ msgstr "Action"
 #: src/routes/datacenter/summary/+page.svelte
 #: src/routes/datacenter/summary/+page.svelte
 msgid "Status"
-msgstr "Status"
+msgstr "ステータス"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "No response"
-msgstr "No response"
+msgstr "応答なし"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Copied response to clipboard"
-msgstr "Copied response to clipboard"
+msgstr "応答をクリップボードにコピーしました"
 
 #: src/lib/components/custom/Login.svelte
 #: src/lib/components/custom/ZFS/datasets/fs/Create.svelte
@@ -558,7 +558,7 @@ msgstr "Copied response to clipboard"
 #: src/lib/components/ui/custom-input/combobox-bindable.svelte
 #: src/lib/components/ui/custom-input/combobox.svelte
 msgid "Enter"
-msgstr "Enter"
+msgstr "入力"
 
 #: src/lib/components/custom/About.svelte
 msgid "Alchemilla"
@@ -585,7 +585,7 @@ msgstr "IPTechnics"
 #: src/lib/components/custom/Login.svelte
 #: src/lib/components/custom/Login.svelte
 msgid "Sylve Logo"
-msgstr "Sylve Logo"
+msgstr "Sylve ロゴ"
 
 #: src/lib/components/custom/About.svelte
 #: src/lib/components/custom/Login.svelte
@@ -598,19 +598,19 @@ msgstr "Sylve"
 
 #: src/lib/components/custom/About.svelte
 msgid "Sponsors"
-msgstr "Sponsors"
+msgstr "スポンサー"
 
 #: src/lib/components/custom/About.svelte
 msgid "Join us"
-msgstr "Join us"
+msgstr "参加する"
 
 #: src/lib/components/custom/About.svelte
 msgid "Released under the <0>BSD 2-Clause License</0>"
-msgstr "Released under the <0>BSD 2-Clause License</0>"
+msgstr "Released under the <0>BSD 2項ライセンス</0>の下、リリース"
 
 #: src/lib/components/custom/About.svelte
 msgid "Support us on <0>GitHub</0>"
-msgstr "Support us on <0>GitHub</0>"
+msgstr "<0>GitHub</0>で我々をサポート"
 
 #: src/lib/components/custom/About.svelte
 msgid "GitHub"
@@ -618,11 +618,11 @@ msgstr "GitHub"
 
 #: src/lib/components/custom/Header.svelte
 msgid "Color Theme"
-msgstr "Color Theme"
+msgstr "カラー テーマ"
 
 #: src/lib/components/custom/Header.svelte
 msgid "Toggle navigation menu"
-msgstr "Toggle navigation menu"
+msgstr "ナビゲーションメニューを切り替え"
 
 #~ msgid "Virtual Environment 0.0.1"
 #~ msgstr "Virtual Environment 0.0.1"
