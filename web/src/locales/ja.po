@@ -630,60 +630,60 @@ msgstr "ナビゲーションメニューを切り替え"
 #: src/lib/components/custom/Header.svelte
 #: src/lib/components/custom/Header.svelte
 msgid "Create VM"
-msgstr "Create VM"
+msgstr "VMを作成"
 
 #: src/lib/components/custom/Header.svelte
 #: src/lib/components/custom/Header.svelte
 msgid "VM creation form minimized"
-msgstr "VM creation form minimized"
+msgstr "VM生成フォームを最小化"
 
 #: src/lib/components/custom/Header.svelte
 #: src/lib/components/custom/Header.svelte
 #: src/lib/components/custom/Jail/Create/CreateJail.svelte
 #: src/lib/components/custom/Jail/Create/CreateJail.svelte
 msgid "Create Jail"
-msgstr "Create Jail"
+msgstr "Jailを作成"
 
 #: src/lib/components/custom/Header.svelte
 #: src/lib/components/custom/Header.svelte
 msgid "Jail creation form minimized"
-msgstr "Jail creation form minimized"
+msgstr "Jail生成フォームを最小化"
 
 #: src/lib/components/custom/Header.svelte
 msgid "Toggle user menu"
-msgstr "Toggle user menu"
+msgstr "ユーザメニューを切り替え"
 
 #: src/lib/components/custom/Header.svelte
 msgid "<0/> Language"
-msgstr "<0/> Language"
+msgstr "<0/> 言語"
 
 #: src/lib/components/custom/Header.svelte
 msgid "Log Out"
-msgstr "Log Out"
+msgstr "ログアウト"
 
 #. 0: Object.keys(value).length
 #: src/lib/components/custom/KVTableModal.svelte
 msgid "Object ({0} properties)"
-msgstr "Object ({0} properties)"
+msgstr "オブジェクト ({0} プロパティ)"
 
 #: src/lib/components/custom/Authentication/CreateOrEdit.svelte
 #: src/lib/components/custom/Login.svelte
 msgid "Username"
-msgstr "Username"
+msgstr "ユーザ名"
 
 #: src/lib/components/custom/Login.svelte
 msgid "Enter your username"
-msgstr "Enter your username"
+msgstr "ユーザ名を入力してください"
 
 #: src/lib/components/custom/Authentication/CreateOrEdit.svelte
 #: src/lib/components/custom/Login.svelte
 #: src/lib/components/custom/VM/Hardware/VNC.svelte
 msgid "Password"
-msgstr "Password"
+msgstr "パスワード"
 
 #: src/lib/components/custom/Login.svelte
 msgid "Realm"
-msgstr "Realm"
+msgstr "レルム"
 
 #: src/lib/components/custom/Login.svelte
 #: src/lib/components/custom/Login.svelte
@@ -692,61 +692,61 @@ msgstr "PAM"
 
 #: src/lib/components/custom/Login.svelte
 msgid "Remember Me"
-msgstr "Remember Me"
+msgstr "私を覚えて"
 
 #: src/lib/components/custom/Dialog/SingleValue.svelte
 #: src/lib/components/custom/SimpleSelect.svelte
 msgid "Select an option"
-msgstr "Select an option"
+msgstr "オプションを選択"
 
 #: src/lib/components/custom/TreeTable.svelte
 #: src/lib/components/custom/TreeTableRemote.svelte
 msgid "No data available"
-msgstr "No data available"
+msgstr "利用可能なデータがありません"
 
 #: src/lib/utils/zfs/pool.svelte.ts
 msgid "Pool contains a mirror with devices of different sizes"
-msgstr "Pool contains a mirror with devices of different sizes"
+msgstr "プールに異なるサイズのデバイスによるミラーが含まれます"
 
 #: src/lib/utils/zfs/pool.svelte.ts
 msgid "Pool contains a RAIDZ vdev with devices of different sizes"
-msgstr "Pool contains a RAIDZ vdev with devices of different sizes"
+msgstr "プールに異なるサイズのデバイスによるRAIDZ vdevが含まれます"
 
 #: src/lib/utils/zfs/pool.svelte.ts
 msgid "Pool is busy"
-msgstr "Pool is busy"
+msgstr "プールは使用中です"
 
 #: src/lib/utils/zfs/pool.svelte.ts
 msgid "Pool is in use by a VM or Jail"
-msgstr "Pool is in use by a VM or Jail"
+msgstr "プールはVMまたはJailで使用中です"
 
 #: src/lib/utils/zfs/pool.svelte.ts
 msgid "Cannot replace with smaller device"
-msgstr "Cannot replace with smaller device"
+msgstr "小さいデバイスでは置き換えできません"
 
 #: src/lib/utils/zfs/pool.svelte.ts
 msgid "Pool edit failed"
-msgstr "Pool edit failed"
+msgstr "プール編集に失敗しました"
 
 #: src/routes/[node]/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Note updated"
-msgstr "Note updated"
+msgstr "ノートが更新されました"
 
 #: src/routes/[node]/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Failed to update note"
-msgstr "Failed to update note"
+msgstr "ノートの更新に失敗しました"
 
 #: src/routes/[node]/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Note created"
-msgstr "Note created"
+msgstr "ノートが作成されました"
 
 #: src/routes/[node]/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Failed to create note"
-msgstr "Failed to create note"
+msgstr "ノートの作成に失敗しました"
 
 #: src/lib/components/custom/Cluster/Storage/Create.svelte
 #: src/lib/components/custom/Cluster/Storage/Create.svelte
@@ -789,7 +789,7 @@ msgstr "Failed to create note"
 #: src/routes/datacenter/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Name"
-msgstr "Name"
+msgstr "名前"
 
 #: src/lib/components/custom/Authentication/Passkeys.svelte
 #: src/routes/[node]/jail/[node]/snapshots/+page.svelte
@@ -797,12 +797,12 @@ msgstr "Name"
 #: src/routes/[node]/vm/[node]/snapshots/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Created"
-msgstr "Created"
+msgstr "作成日"
 
 #: src/routes/[node]/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Updated"
-msgstr "Updated"
+msgstr "更新日"
 
 #: src/routes/[node]/network/interfaces/+page.svelte
 #: src/routes/[node]/notes/+page.svelte
@@ -810,7 +810,7 @@ msgstr "Updated"
 #: src/routes/datacenter/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "View"
-msgstr "View"
+msgstr "表示"
 
 #: src/lib/components/custom/Authentication/Passkeys.svelte
 #: src/routes/[node]/jail/[node]/+layout.svelte
@@ -836,7 +836,7 @@ msgstr "View"
 #: src/routes/datacenter/notes/+page.svelte
 #: src/routes/datacenter/replication/policies/+page.svelte
 msgid "Delete"
-msgstr "Delete"
+msgstr "削除"
 
 #: src/lib/components/custom/Network/DHCP/Lease/CreateOrEdit.svelte
 #: src/lib/components/custom/Network/DHCP/Lease/CreateOrEdit.svelte
@@ -863,13 +863,13 @@ msgstr "Delete"
 #: src/routes/datacenter/notes/+page.svelte
 #: src/routes/datacenter/replication/policies/+page.svelte
 msgid "Edit"
-msgstr "Edit"
+msgstr "編集"
 
 #: src/routes/[node]/notes/+page.svelte
 #: src/routes/[node]/utilities/downloader/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Bulk Delete"
-msgstr "Bulk Delete"
+msgstr "一括削除"
 
 #: src/lib/components/custom/VM/Hardware/Storage.svelte
 #: src/routes/[node]/jail/[node]/network/+page.svelte
@@ -899,12 +899,12 @@ msgstr "Bulk Delete"
 #: src/routes/datacenter/notes/+page.svelte
 #: src/routes/datacenter/replication/policies/+page.svelte
 msgid "New"
-msgstr "New"
+msgstr "新規"
 
 #: src/routes/[node]/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Note"
-msgstr "Note"
+msgstr "ノート"
 
 #: src/lib/components/custom/Authentication/CreateOrEdit.svelte
 #: src/lib/components/custom/Authentication/CreateOrEdit.svelte
@@ -1015,7 +1015,7 @@ msgstr "Note"
 #: src/routes/datacenter/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Reset"
-msgstr "Reset"
+msgstr "リセット"
 
 #: src/lib/components/custom/Authentication/CreateOrEdit.svelte
 #: src/lib/components/custom/Authentication/CreateOrEdit.svelte
@@ -1165,24 +1165,24 @@ msgstr "Reset"
 #: src/routes/datacenter/replication/policies/+page.svelte
 #: src/routes/datacenter/replication/policies/+page.svelte
 msgid "Close"
-msgstr "Close"
+msgstr "閉じる"
 
 #: src/routes/[node]/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Post Upgrade Summary"
-msgstr "Post Upgrade Summary"
+msgstr "アップグレード後要約"
 
 #: src/routes/[node]/notes/+page.svelte
 #: src/routes/[node]/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Content"
-msgstr "Content"
+msgstr "内容"
 
 #: src/routes/[node]/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "This is a note"
-msgstr "This is a note"
+msgstr "これはノートです"
 
 #: src/lib/components/custom/Authentication/CreateOrEdit.svelte
 #: src/lib/components/custom/Dialog/SingleValue.svelte
@@ -1216,17 +1216,17 @@ msgstr "This is a note"
 #: src/routes/datacenter/notes/+page.svelte
 #: src/routes/datacenter/replication/policies/+page.svelte
 msgid "Save"
-msgstr "Save"
+msgstr "保存"
 
 #: src/routes/[node]/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Failed to delete note"
-msgstr "Failed to delete note"
+msgstr "ノートの削除に失敗しました"
 
 #: src/routes/[node]/notes/+page.svelte
 #: src/routes/datacenter/notes/+page.svelte
 msgid "Failed to delete notes"
-msgstr "Failed to delete notes"
+msgstr "ノートの削除に失敗しました"
 
 #: src/routes/[node]/jail/[node]/summary/+page.svelte
 #: src/routes/[node]/jail/[node]/summary/+page.svelte
@@ -1235,22 +1235,22 @@ msgstr "Failed to delete notes"
 #: src/routes/[node]/vm/[node]/summary/+page.svelte
 #: src/routes/[node]/vm/[node]/summary/+page.svelte
 msgid "CPU Usage"
-msgstr "CPU Usage"
+msgstr "CPU 使用率"
 
 #: src/routes/[node]/jail/[node]/summary/+page.svelte
 #: src/routes/[node]/summary/+page.svelte
 #: src/routes/[node]/summary/+page.svelte
 #: src/routes/[node]/vm/[node]/summary/+page.svelte
 msgid "RAM Usage"
-msgstr "RAM Usage"
+msgstr "RAM 使用率"
 
 #: src/routes/[node]/summary/+page.svelte
 msgid "Disk Usage"
-msgstr "Disk Usage"
+msgstr "Disk 使用率"
 
 #: src/routes/[node]/summary/+page.svelte
 msgid "Swap Usage"
-msgstr "Swap Usage"
+msgstr "Swap 使用率"
 
 #: src/routes/[node]/summary/+page.svelte
 msgid "CPU(s)"
@@ -1258,35 +1258,35 @@ msgstr "CPU(s)"
 
 #: src/routes/[node]/summary/+page.svelte
 msgid "Operating System"
-msgstr "Operating System"
+msgstr "オペレーティングシステム"
 
 #: src/routes/[node]/summary/+page.svelte
 msgid "Uptime"
-msgstr "Uptime"
+msgstr "稼働時間"
 
 #: src/routes/[node]/summary/+page.svelte
 msgid "Load Average"
-msgstr "Load Average"
+msgstr "負荷平均"
 
 #: src/routes/[node]/summary/+page.svelte
 msgid "Boot Mode"
-msgstr "Boot Mode"
+msgstr "Boot モード"
 
 #: src/routes/[node]/summary/+page.svelte
 msgid "Sylve Version"
-msgstr "Sylve Version"
+msgstr "Sylve バージョン"
 
 #: src/routes/[node]/summary/+page.svelte
 msgid "Network Usage"
-msgstr "Network Usage"
+msgstr "Network 使用率"
 
 #: src/routes/[node]/summary/+page.svelte
 msgid "Received"
-msgstr "Received"
+msgstr "受信"
 
 #: src/routes/[node]/summary/+page.svelte
 msgid "Sent"
-msgstr "Sent"
+msgstr "送信"
 
 #: src/routes/[node]/jail/[node]/console/+page.svelte
 #: src/routes/[node]/terminal/+page.svelte
@@ -1298,13 +1298,13 @@ msgstr "Monaco, Menlo, \"Courier New\", monospace"
 #: src/routes/[node]/terminal/+page.svelte
 #: src/routes/[node]/vm/[node]/console/+page.svelte
 msgid "Disconnect"
-msgstr "Disconnect"
+msgstr "切断"
 
 #: src/routes/[node]/jail/[node]/console/+page.svelte
 #: src/routes/[node]/terminal/+page.svelte
 #: src/routes/[node]/vm/[node]/console/+page.svelte
 msgid "Reconnect"
-msgstr "Reconnect"
+msgstr "再接続"
 
 #: src/routes/[node]/terminal/+page.svelte
 msgid "The host console has been disconnected.<0/> Click the \"Reconnect\" button to start a new session."
