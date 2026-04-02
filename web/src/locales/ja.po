@@ -1308,21 +1308,21 @@ msgstr "再接続"
 
 #: src/routes/[node]/terminal/+page.svelte
 msgid "The host console has been disconnected.<0/> Click the \"Reconnect\" button to start a new session."
-msgstr "The host console has been disconnected.<0/> Click the \"Reconnect\" button to start a new session."
+msgstr "ホストのコンソールが切断されました。<0/> \"再接続\"ボタンをクリックして新しいセッションを開始してください。"
 
 #: src/routes/[node]/terminal/+page.svelte
 msgid "Host terminal"
-msgstr "Host terminal"
+msgstr "ホスト端末"
 
 #: src/routes/[node]/terminal/+page.svelte
 msgid "Host Console Settings"
-msgstr "Host Console Settings"
+msgstr "ホストコンソール設定"
 
 #: src/routes/[node]/jail/[node]/console/+page.svelte
 #: src/routes/[node]/terminal/+page.svelte
 #: src/routes/[node]/vm/[node]/console/+page.svelte
 msgid "Font Size"
-msgstr "Font Size"
+msgstr "フォントサイズ"
 
 #: src/routes/[node]/jail/[node]/console/+page.svelte
 #: src/routes/[node]/terminal/+page.svelte
