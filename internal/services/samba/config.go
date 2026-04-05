@@ -137,6 +137,21 @@ func (s *Service) GlobalConfig() (string, error) {
 	config += "restrict anonymous = 2\n"
 	config += "fruit:model = Xserve\n"
 	config += "server role = standalone server\n"
+	config += "\n"
+	config += "[TimeMachine]\n"
+	config += "\tpath = /znas/nas/timemachine\n"
+	config += "\tread only = no\n"
+	config += "\tfruit:time machine = yes\n"
+	config += "\tfull_audit:prefix = sylve-timemachine-al|%u|%I|%m|%S|%P\n"
+	config += "\tfull_audit:success = openat close read write renameat unlinkat mkdirat create_file connect disconnect\n"
+	config += "\tfull_audit:failure = all !getwd !get_real_filename !fgetxattr !fget_dos_attributes\n"
+	config += "\tfull_audit:facility = LOCAL7\n"
+	config += "\tfull_audit:priority = ALERT\n"
+	config += "\tfull_audit:syslog = true\n"
+	config += "\tfull_audit:log_secdesc = true\n"
+	config += "\tfruit:time machine max size = 512G\n"
+	config += "fruit:advertise_fullsync = Yes"
+	config += "\n\n"
 
 	return config, nil
 }
@@ -223,6 +238,11 @@ func (s *Service) ShareConfig(ctx context.Context) (string, error) {
 		config.WriteString("\tfull_audit:priority = ALERT\n")
 		config.WriteString("\tfull_audit:syslog = true\n")
 		config.WriteString("\tfull_audit:log_secdesc = true\n")
+		config.WriteString("\n")
+		config.WriteString("delete veto files = Yes\n")
+		config.WriteString("veto files = /._*/.DS_Store/\n")
+		config.WriteString("fruit:metadata = stream\n")
+		config.WriteString("fruit:wipe_intentionally_left_blank_rfork = Yes\n")
 
 		config.WriteString("\n\n")
 
