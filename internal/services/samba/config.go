@@ -127,8 +127,16 @@ func (s *Service) GlobalConfig() (string, error) {
 		config += "bind interfaces only = no\n"
 	}
 
-	config += "vfs objects = full_audit zfsacl\n"
+	config += "vfs objects = full_audit zfsacl fruit streams_xattr\n"
 	config += "inherit acls = yes\n"
+	config += "\n"
+	config += "server min protocol = SMB2\n"
+	config += "client signing = required\n"
+	config += "server signing = mandatory\n"
+	config += "security = USER\n"
+	config += "restrict anonymous = 2\n"
+	config += "fruit:model = Xserve\n"
+	config += "server role = standalone server\n"
 
 	return config, nil
 }
