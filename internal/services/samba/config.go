@@ -224,6 +224,10 @@ func (s *Service) ShareConfig(ctx context.Context) (string, error) {
 		config.WriteString("\tfull_audit:priority = ALERT\n")
 		config.WriteString("\tfull_audit:syslog = true\n")
 		config.WriteString("\tfull_audit:log_secdesc = true\n")
+		config.WriteString("\tdelete veto files = Yes\n")
+		config.WriteString("\tveto files = /._*/.DS_Store/\n")
+		config.WriteString("\tfruit:metadata = stream\n")
+		config.WriteString("\tfruit:wipe_intentionally_left_blank_rfork = Yes\n")
 
 		config.WriteString("\n\n")
 
