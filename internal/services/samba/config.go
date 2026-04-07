@@ -277,7 +277,7 @@ func (s *Service) WriteConfig(ctx context.Context, reload bool) error {
 	fullConfig += "\tread only = no\n"
 	fullConfig += "\tcreate mask = 0600\n"
 	fullConfig += "\tdirectory mask = 0700\n"
-	fullConfig += "\tvalid users = %S\n"
+	fullConfig += "\tvalid users = %U\n"
 	fullConfig += "\tfull_audit:prefix = sylve-smb-al|%u|%I|%m|%S|%P\n"
 	fullConfig += "\tfull_audit:success = openat close read write renameat unlinkat mkdirat create_file connect disconnect\n"
 	fullConfig += "\tfull_audit:failure = all !getwd !get_real_filename !fgetxattr !fget_dos_attributes\n"
