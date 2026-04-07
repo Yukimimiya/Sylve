@@ -270,6 +270,26 @@ func (s *Service) WriteConfig(ctx context.Context, reload bool) error {
 	}
 
 	fullConfig := gCfg + "\n" + shareCfg
+	// add homes share
+	fullConfig += "[homes]\n"
+	fullConfig += "\tcomment = Home Directories\n"
+	fullConfig += "\tbrowseable = no\n"
+	fullConfig += "\tread only = no\n"
+	fullConfig += "\tcreate mask = 0600\n"
+	fullConfig += "\tdirectory mask = 0700\n"
+	fullConfig += "\tvalid users = %S\n"
+	fullConfig += "\tfull_audit:prefix = sylve-smb-al|%u|%I|%m|%S|%P\n"
+	fullConfig += "\tfull_audit:success = openat close read write renameat unlinkat mkdirat create_file connect disconnect\n"
+	fullConfig += "\tfull_audit:failure = all !getwd !get_real_filename !fgetxattr !fget_dos_attributes\n"
+	fullConfig += "\tfull_audit:facility = LOCAL7\n"
+	fullConfig += "\tfull_audit:priority = ALERT\n"
+	fullConfig += "\tfull_audit:syslog = true\n"
+	fullConfig += "\tfull_audit:log_secdesc = true\n"
+	fullConfig += "\tdelete veto files = Yes\n"
+	fullConfig += "\tveto files = /._*/.DS_Store/\n"
+	fullConfig += "\tfruit:metadata = stream\n"
+	fullConfig += "\tfruit:wipe_intentionally_left_blank_rfork = Yes\n\n"
+
 	filePath := "/usr/local/etc/smb4.conf"
 
 	if err := os.WriteFile(filePath, []byte(fullConfig), 0644); err != nil {
