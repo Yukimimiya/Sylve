@@ -127,7 +127,7 @@ func (s *Service) GlobalConfig() (string, error) {
 		config += "bind interfaces only = no\n"
 	}
 
-	config += "vfs objects = full_audit zfsacl catia recyvle fruit streams_xattr\n"
+	config += "vfs objects = full_audit zfsacl catia recycle fruit streams_xattr\n"
 	// config += "vfs objects = full_audit zfsacl\n"
 	config += "inherit acls = yes\n"
 	config += "\n"
