@@ -141,6 +141,7 @@ func (s *Service) GlobalConfig() (string, error) {
 	config += "fruit:metadata = netatalk\n"
 	config += "fruit:resource = file\n"
 	config += "fruit:veto_appledouble = no\n"
+	config += "fruit:nfs_aces = no\n"
 	config += "streams_xattr:prefix = user.\n"
 	config += "streams_xattr:store_stream_type = no\n"
 	config += "nfs4:mode = simple\n"
