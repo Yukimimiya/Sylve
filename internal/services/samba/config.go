@@ -127,7 +127,7 @@ func (s *Service) GlobalConfig() (string, error) {
 		config += "bind interfaces only = no\n"
 	}
 
-	config += "vfs objects = full_audit zfsacl catia fruit streams_xattr\n"
+	config += "vfs objects = full_audit zfsacl catia recyvle fruit streams_xattr\n"
 	// config += "vfs objects = full_audit zfsacl\n"
 	config += "inherit acls = yes\n"
 	config += "\n"
@@ -236,6 +236,11 @@ func (s *Service) ShareConfig(ctx context.Context) (string, error) {
 		config.WriteString("\tstrict allocate = no\n")
 		config.WriteString("\tstore dos attributes = yes\n")
 		config.WriteString("\tmap archive = no\n")
+		config.WriteString("\trecycle:repository = @Recycle\n")
+		config.WriteString("\trecycle:keeptree = yes\n")
+		config.WriteString("\trecycle:versions = yes\n")
+		config.WriteString("\trecycle:directory_mode = 0770\n")
+		config.WriteString("\trecycle:recycle:touch = yes\n")
 
 		config.WriteString("\n\n")
 
@@ -296,6 +301,12 @@ func (s *Service) WriteConfig(ctx context.Context, reload bool) error {
 	fullConfig += "\tstrict allocate = no\n"
 	fullConfig += "\tstore dos attributes = yes\n"
 	fullConfig += "\tmap archive = no\n"
+	fullConfig += "\trecycle:repository = @Recycle\n"
+	fullConfig += "\trecycle:keeptree = yes\n"
+	fullConfig += "\trecycle:versions = yes\n"
+	fullConfig += "\trecycle:directory_mode = 0770\n"
+	fullConfig += "\trecycle:recycle:touch = yes\n"
+
 	filePath := "/usr/local/etc/smb4.conf"
 
 	if err := os.WriteFile(filePath, []byte(fullConfig), 0644); err != nil {
