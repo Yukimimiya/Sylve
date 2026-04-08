@@ -127,26 +127,23 @@ func (s *Service) GlobalConfig() (string, error) {
 		config += "bind interfaces only = no\n"
 	}
 
-	config += "vfs objects = full_audit zfsacl catia recycle fruit streams_xattr\n"
+	config += "vfs objects = full_audit catia recycle fruit streams_xattr\n"
 	// config += "vfs objects = full_audit zfsacl\n"
-	config += "inherit acls = yes\n"
+	// config += "inherit acls = yes\n"
 	config += "\n"
-	config += "dos filetimes = yes\n"
-	config += "dos filemode = yes\n"
-	config += "inherit permissions = yes\n"
-	config += "map acl inherit = yes\n"
-	config += "acl group control = Yes\n"
+	config += "server min protocol = SMB2_10\n"
+	config += "server max protocol = SMB3_11\n"
+	config += "fruit:metadata = stream\n"
+	config += "fruit:resource = stream\n"
+	config += "fruit:locking = none\n"
 	config += "ea support = yes\n"
-	config += "fruit:encoding = native\n"
-	config += "fruit:metadata = netatalk\n"
-	config += "fruit:resource = file\n"
-	config += "fruit:veto_appledouble = no\n"
-	config += "fruit:nfs_aces = no\n"
-	config += "streams_xattr:prefix = user.\n"
-	config += "streams_xattr:store_stream_type = no\n"
-	config += "nfs4:mode = simple\n"
-	config += "nfs4:acedup = merge\n"
-	config += "nfs4:chown = yes\n"
+	config += "map acl inherit = yes\n"
+	config += "store dos attributes = yes\n"
+	config += "unix extensions = no\n"
+	config += "wide links = no\n"
+	config += "aio read size = 1\n"
+	config += "aio write size = 1\n"
+	config += "use sendfile = yes\n"
 	config += "\n"
 
 	return config, nil
@@ -234,9 +231,8 @@ func (s *Service) ShareConfig(ctx context.Context) (string, error) {
 		config.WriteString("\tfull_audit:priority = ALERT\n")
 		config.WriteString("\tfull_audit:syslog = true\n")
 		config.WriteString("\tfull_audit:log_secdesc = true\n")
-		config.WriteString("\tstrict allocate = no\n")
-		config.WriteString("\tstore dos attributes = yes\n")
-		config.WriteString("\tmap archive = no\n")
+
+		config.WriteString("\tinherit permissions = yes\n")
 		config.WriteString("\trecycle:repository = @Recycle\n")
 		config.WriteString("\trecycle:keeptree = yes\n")
 		config.WriteString("\trecycle:versions = yes\n")
@@ -299,9 +295,7 @@ func (s *Service) WriteConfig(ctx context.Context, reload bool) error {
 	fullConfig += "\tfull_audit:priority = ALERT\n"
 	fullConfig += "\tfull_audit:syslog = true\n"
 	fullConfig += "\tfull_audit:log_secdesc = true\n"
-	fullConfig += "\tstrict allocate = no\n"
-	fullConfig += "\tstore dos attributes = yes\n"
-	fullConfig += "\tmap archive = no\n"
+	fullConfig += "\tinherit permissions = yes\n"
 	fullConfig += "\trecycle:repository = @Recycle\n"
 	fullConfig += "\trecycle:keeptree = yes\n"
 	fullConfig += "\trecycle:versions = yes\n"
