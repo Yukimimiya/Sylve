@@ -127,17 +127,25 @@ func (s *Service) GlobalConfig() (string, error) {
 		config += "bind interfaces only = no\n"
 	}
 
-	// config += "vfs objects = full_audit zfsacl fruit streams_xattr\n"
-	config += "vfs objects = full_audit zfsacl\n"
+	config += "vfs objects = full_audit zfsacl catia fruit streams_xattr\n"
+	// config += "vfs objects = full_audit zfsacl\n"
 	config += "inherit acls = yes\n"
 	config += "\n"
-	// config += "server min protocol = SMB2\n"
-	// config += "client signing = required\n"
-	// config += "server signing = mandatory\n"
-	// config += "security = USER\n"
-	// config += "restrict anonymous = 2\n"
-	// config += "fruit:model = Xserve\n"
-	// config += "server role = standalone server\n"
+	config += "dos filemode = yes\n"
+	config += "dos filemode = yes\n"
+	config += "inherit permissions = yes\n"
+	config += "map acl inherit == yes\n"
+	config += "acl group control = Yes\n"
+	config += "ea support = yes\n"
+	config += "fruit:encoding = native\n"
+	config += "fruit:metadata = netatalk\n"
+	config += "fruit:resource = file\n"
+	config += "fruit:veto_appledouble = no\n"
+	config += "streams_xattr:prefix = user.\n"
+	config += "streams_xattr:store_stream_type = no\n"
+	config += "nfs4:mode = simple\n"
+	config += "nfs4:acedup = merge\n"
+	config += "nfs4:chown = yes\n"
 	config += "\n"
 
 	return config, nil
@@ -225,10 +233,9 @@ func (s *Service) ShareConfig(ctx context.Context) (string, error) {
 		config.WriteString("\tfull_audit:priority = ALERT\n")
 		config.WriteString("\tfull_audit:syslog = true\n")
 		config.WriteString("\tfull_audit:log_secdesc = true\n")
-		// config.WriteString("\tdelete veto files = Yes\n")
-		// config.WriteString("\tveto files = /._*/.DS_Store/\n")
-		// config.WriteString("\tfruit:metadata = stream\n")
-		//config.WriteString("\tfruit:wipe_intentionally_left_blank_rfork = Yes\n")
+		config.WriteString("\tstrict allocate = no\n")
+		config.WriteString("\tstore dos attributes = yes\n")
+		config.WriteString("\tmap archive = no\n")
 
 		config.WriteString("\n\n")
 
@@ -286,11 +293,9 @@ func (s *Service) WriteConfig(ctx context.Context, reload bool) error {
 	fullConfig += "\tfull_audit:priority = ALERT\n"
 	fullConfig += "\tfull_audit:syslog = true\n"
 	fullConfig += "\tfull_audit:log_secdesc = true\n"
-	// fullConfig += "\tdelete veto files = Yes\n"
-	// fullConfig += "\tveto files = /._*/.DS_Store/\n"
-	// fullConfig += "\tfruit:metadata = stream\n"
-	//fullConfig += "\tfruit:wipe_intentionally_left_blank_rfork = Yes\n\n"
-
+	fullConfig += "\tstrict allocate = no\n"
+	fullConfig += "\tstore dos attributes = yes\n"
+	fullConfig += "\tmap archive = no\n"
 	filePath := "/usr/local/etc/smb4.conf"
 
 	if err := os.WriteFile(filePath, []byte(fullConfig), 0644); err != nil {
