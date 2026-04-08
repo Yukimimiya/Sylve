@@ -127,16 +127,17 @@ func (s *Service) GlobalConfig() (string, error) {
 		config += "bind interfaces only = no\n"
 	}
 
-	config += "vfs objects = full_audit zfsacl fruit streams_xattr\n"
+	// config += "vfs objects = full_audit zfsacl fruit streams_xattr\n"
+	config += "vfs objects = full_audit zfsacl\n"
 	config += "inherit acls = yes\n"
 	config += "\n"
-	config += "server min protocol = SMB2\n"
-	config += "client signing = required\n"
-	config += "server signing = mandatory\n"
-	config += "security = USER\n"
-	config += "restrict anonymous = 2\n"
-	config += "fruit:model = Xserve\n"
-	config += "server role = standalone server\n"
+	// config += "server min protocol = SMB2\n"
+	// config += "client signing = required\n"
+	// config += "server signing = mandatory\n"
+	// config += "security = USER\n"
+	// config += "restrict anonymous = 2\n"
+	// config += "fruit:model = Xserve\n"
+	// config += "server role = standalone server\n"
 	config += "\n"
 
 	return config, nil
@@ -224,10 +225,10 @@ func (s *Service) ShareConfig(ctx context.Context) (string, error) {
 		config.WriteString("\tfull_audit:priority = ALERT\n")
 		config.WriteString("\tfull_audit:syslog = true\n")
 		config.WriteString("\tfull_audit:log_secdesc = true\n")
-		config.WriteString("\tdelete veto files = Yes\n")
-		config.WriteString("\tveto files = /._*/.DS_Store/\n")
-		config.WriteString("\tfruit:metadata = stream\n")
-		config.WriteString("\tfruit:wipe_intentionally_left_blank_rfork = Yes\n")
+		// config.WriteString("\tdelete veto files = Yes\n")
+		// config.WriteString("\tveto files = /._*/.DS_Store/\n")
+		// config.WriteString("\tfruit:metadata = stream\n")
+		//config.WriteString("\tfruit:wipe_intentionally_left_blank_rfork = Yes\n")
 
 		config.WriteString("\n\n")
 
@@ -285,10 +286,10 @@ func (s *Service) WriteConfig(ctx context.Context, reload bool) error {
 	fullConfig += "\tfull_audit:priority = ALERT\n"
 	fullConfig += "\tfull_audit:syslog = true\n"
 	fullConfig += "\tfull_audit:log_secdesc = true\n"
-	fullConfig += "\tdelete veto files = Yes\n"
-	fullConfig += "\tveto files = /._*/.DS_Store/\n"
-	fullConfig += "\tfruit:metadata = stream\n"
-	fullConfig += "\tfruit:wipe_intentionally_left_blank_rfork = Yes\n\n"
+	// fullConfig += "\tdelete veto files = Yes\n"
+	// fullConfig += "\tveto files = /._*/.DS_Store/\n"
+	// fullConfig += "\tfruit:metadata = stream\n"
+	//fullConfig += "\tfruit:wipe_intentionally_left_blank_rfork = Yes\n\n"
 
 	filePath := "/usr/local/etc/smb4.conf"
 
