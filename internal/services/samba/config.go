@@ -796,7 +796,7 @@ func validateSambaConfig(config string) error {
 func (s *Service) WriteConfig(ctx context.Context, reload bool) error {
 	settings, err := s.GetGlobalConfig()
 	if err != nil {
-		return "", fmt.Errorf("failed to get Samba settings: %w", err)
+		return err
 	}
 	gCfg, err := s.GlobalConfig()
 	if err != nil {
