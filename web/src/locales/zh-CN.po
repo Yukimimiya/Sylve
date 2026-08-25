@@ -5668,6 +5668,10 @@ msgstr "控制台已断开连接。<0/> 点击“重新连接”按钮以重新�
 msgid "Jail terminal"
 msgstr "Jail 终端"
 
+#: src/lib/components/custom/Jail/Template/View.svelte
+#: src/lib/components/custom/Jail/Template/View.svelte
+#: src/lib/components/custom/Jail/Template/View.svelte
+#: src/lib/components/custom/Jail/Template/View.svelte
 #: src/routes/[node]/jail/[ctid]/hardware/+page.svelte
 #: src/routes/[node]/jail/[ctid]/hardware/+page.svelte
 #: src/routes/[node]/jail/[ctid]/hardware/+page.svelte
@@ -7099,10 +7103,6 @@ msgstr "删除定期快照失败"
 #: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
 msgid "View Snapshot Jobs"
 msgstr "查看快照任务"
-
-#: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
-msgid "Jan 01, 0001"
-msgstr "0001年1月1日"
 
 #: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
 msgid "Deleted"
@@ -17549,4 +17549,14 @@ msgstr ""
 
 #: src/lib/components/custom/Jail/Options/ExecutionTimeout.svelte
 msgid "Execution Timeout (Seconds)"
+msgstr ""
+
+#. 0: runTimeToAgo(snapshot.lastExecutedAt)
+#: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
+msgid "Actual: {0}"
+msgstr ""
+
+#. 0: runTimeToAgo(snapshot.lastRunAt)
+#: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
+msgid "Scheduled: {0}"
 msgstr ""

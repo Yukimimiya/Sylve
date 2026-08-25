@@ -5672,6 +5672,10 @@ msgstr "Konzole byla odpojena. <0/> Pokud chcete znovu navázat spojení, klikn�
 msgid "Jail terminal"
 msgstr ""
 
+#: src/lib/components/custom/Jail/Template/View.svelte
+#: src/lib/components/custom/Jail/Template/View.svelte
+#: src/lib/components/custom/Jail/Template/View.svelte
+#: src/lib/components/custom/Jail/Template/View.svelte
 #: src/routes/[node]/jail/[ctid]/hardware/+page.svelte
 #: src/routes/[node]/jail/[ctid]/hardware/+page.svelte
 #: src/routes/[node]/jail/[ctid]/hardware/+page.svelte
@@ -7103,10 +7107,6 @@ msgstr "Nepodařilo se smazat pravidelně pořizovaný zachycený stav"
 #: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
 msgid "View Snapshot Jobs"
 msgstr "Zobrazit úlohy pořizování zachycených stavů"
-
-#: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
-msgid "Jan 01, 0001"
-msgstr "Led 01, 001"
 
 #: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
 msgid "Deleted"
@@ -17555,4 +17555,14 @@ msgstr ""
 
 #: src/lib/components/custom/Jail/Options/ExecutionTimeout.svelte
 msgid "Execution Timeout (Seconds)"
+msgstr ""
+
+#. 0: runTimeToAgo(snapshot.lastExecutedAt)
+#: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
+msgid "Actual: {0}"
+msgstr ""
+
+#. 0: runTimeToAgo(snapshot.lastRunAt)
+#: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
+msgid "Scheduled: {0}"
 msgstr ""

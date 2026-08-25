@@ -5670,6 +5670,10 @@ msgstr "कंसोल डिस्कनेक्ट हो गया है�
 msgid "Jail terminal"
 msgstr "जेल टर्मिनल"
 
+#: src/lib/components/custom/Jail/Template/View.svelte
+#: src/lib/components/custom/Jail/Template/View.svelte
+#: src/lib/components/custom/Jail/Template/View.svelte
+#: src/lib/components/custom/Jail/Template/View.svelte
 #: src/routes/[node]/jail/[ctid]/hardware/+page.svelte
 #: src/routes/[node]/jail/[ctid]/hardware/+page.svelte
 #: src/routes/[node]/jail/[ctid]/hardware/+page.svelte
@@ -7101,10 +7105,6 @@ msgstr "आवधिक स्नैपशॉट हटाने में व�
 #: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
 msgid "View Snapshot Jobs"
 msgstr "स्नैपशॉट कार्य देखें"
-
-#: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
-msgid "Jan 01, 0001"
-msgstr "01 जन, 0001"
 
 #: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
 msgid "Deleted"
@@ -17552,4 +17552,14 @@ msgstr ""
 
 #: src/lib/components/custom/Jail/Options/ExecutionTimeout.svelte
 msgid "Execution Timeout (Seconds)"
+msgstr ""
+
+#. 0: runTimeToAgo(snapshot.lastExecutedAt)
+#: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
+msgid "Actual: {0}"
+msgstr ""
+
+#. 0: runTimeToAgo(snapshot.lastRunAt)
+#: src/lib/components/custom/ZFS/datasets/snapshots/Jobs.svelte
+msgid "Scheduled: {0}"
 msgstr ""
