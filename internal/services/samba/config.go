@@ -564,7 +564,7 @@ func (s *Service) GlobalConfig() (string, error) {
 	if settings.AppleExtensions {
 		config += "min protocol = SMB2\n"
 		config += "ea support = yes\n"
-		config += "vfs objects = catia recycle fruit streams_xattr full_audit zfsacl\n"
+		config += "vfs objects = catia fruit streams_xattr recycle full_audit zfsacl\n"
 		config += "fruit:metadata = stream\n"
 		config += "fruit:model = MacSamba\n"
 		config += "fruit:veto_appledouble = no\n"
