@@ -723,8 +723,9 @@ func (s *Service) ShareConfig(ctx context.Context) (string, error) {
 		// Per-share VFS objects
 		var vfsObjects []string
 		if settings.AppleExtensions {
-			vfsObjects = append(vfsObjects, "fruit", "streams_xattr")
+			vfsObjects = append(vfsObjects, "catia", "fruit", "streams_xattr")
 		}
+		vfsObjects = append(vfsObjects, "recycle")
 		if share.AuditEnabled && len(share.AuditedOperations) > 0 {
 			vfsObjects = append(vfsObjects, "full_audit")
 		}
@@ -741,6 +742,7 @@ func (s *Service) ShareConfig(ctx context.Context) (string, error) {
 			config.WriteString("\tfruit:wipe_intentionally_left_blank_rfork = yes\n")
 			config.WriteString("\tfruit:delete_empty_adfiles = yes\n")
 			config.WriteString("\tfruit:posix_rename = yes\n")
+			config.WriteString("\tfruit:encoding = native\n")
 		}
 
 		if settings.AppleExtensions && share.TimeMachine {
@@ -838,6 +840,7 @@ func (s *Service) WriteConfig(ctx context.Context, reload bool) error {
 		fullConfig += "\tfruit:wipe_intentionally_left_blank_rfork = yes\n"
 		fullConfig += "\tfruit:delete_empty_adfiles = yes\n"
 		fullConfig += "\tfruit:posix_rename = yes\n"
+		fullConfig += "\tfruit:encoding = native\n"
 	}
 
 	if err := validateSambaConfig(fullConfig); err != nil {
