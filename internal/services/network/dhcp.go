@@ -418,6 +418,9 @@ func renderDHCPConfig(db *gorm.DB) ([]byte, error) {
 	if len(current.DNSServers) > 0 {
 		config.WriteString("\n")
 	}
+	// for tailscale
+	fmt.Fprintf(&config, "server=/ts.net/100.100.100.100\n")
+
 	if current.Domain != "" {
 		fmt.Fprintf(&config, "domain=%s\n\n", current.Domain)
 		fmt.Fprintf(&config, "domain-needed\n")
