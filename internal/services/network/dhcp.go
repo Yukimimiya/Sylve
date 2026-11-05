@@ -456,6 +456,8 @@ func renderDHCPConfig(db *gorm.DB) ([]byte, error) {
 		fmt.Fprintf(&config, "server=%s\n", dns)
 	}
 	//quick hack to add Tailscale DNS server
+	config.WriteString("bogus-priv\n")
+	config.WriteString("strict-order\n")
 	config.WriteString("server=/ts.net/100.100.100.100\n")
 	if len(current.DNSServers) > 0 {
 		config.WriteString("\n")
