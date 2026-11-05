@@ -13,5 +13,8 @@ import "embed"
 //go:embed all:web-files
 var SvelteKitFiles embed.FS
 
-//go:embed all:zelta
+//go:embed zelta/bin zelta/share zelta/LICENSE
 var ZeltaFiles embed.FS
+
+//go:embed catalog
+var CatalogFiles embed.FS

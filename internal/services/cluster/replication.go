@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"sort"
 	"strings"
 	"time"
@@ -26,7 +25,6 @@ import (
 )
 
 const (
-	DefaultReplicationLeaseTTL                = 10 * time.Second
 	DefaultReplicationRenewWindow             = 3 * time.Second
 	ReplicationVMFilesystemStorageUnsupported = vmModels.ReplicationFilesystemStorageUnsupported
 )
@@ -233,10 +231,10 @@ func (s *Service) ProposeReplicationPolicyStateUpdate(update ReplicationPolicyRu
 		}).Error
 	}
 
-	if s.Raft == nil {
+	if s.Raft() == nil {
 		return fmt.Errorf("raft_not_initialized")
 	}
-	if s.Raft.State() != raft.Leader {
+	if s.Raft().State() != raft.Leader {
 		return fmt.Errorf("not_leader")
 	}
 
@@ -250,16 +248,6 @@ func (s *Service) ProposeReplicationPolicyStateUpdate(update ReplicationPolicyRu
 		Action: "state_update",
 		Data:   data,
 	})
-}
-
-// guestExistsInCluster checks whether a guest (VM or jail) exists on any
-// node in the cluster by aggregating per-node resources.
-func (s *Service) guestExistsInCluster(guestType string, guestID uint) (bool, error) {
-	nodeID, err := s.ResolveReplicationGuestOwnerNode(guestType, guestID)
-	if err != nil {
-		return false, err
-	}
-	return nodeID != "", nil
 }
 
 func (s *Service) buildReplicationPolicy(
@@ -283,7 +271,7 @@ func (s *Service) buildReplicationPolicy(
 	}
 
 	guestType := strings.TrimSpace(strings.ToLower(input.GuestType))
-	if guestType != clusterModels.ReplicationGuestTypeVM && guestType != clusterModels.ReplicationGuestTypeJail {
+	if !clusterModels.ValidReplicationGuestType(guestType) {
 		return nil, nil, fmt.Errorf("invalid_guest_type")
 	}
 	if input.GuestID == 0 {
@@ -538,7 +526,7 @@ func (s *Service) ResolveReplicationGuestOwnerNode(guestType string, guestID uin
 	if guestID == 0 {
 		return "", fmt.Errorf("guest_id_required")
 	}
-	if guestType != clusterModels.ReplicationGuestTypeVM && guestType != clusterModels.ReplicationGuestTypeJail {
+	if !clusterModels.ValidReplicationGuestType(guestType) {
 		return "", fmt.Errorf("invalid_guest_type")
 	}
 
@@ -771,34 +759,11 @@ func (s *Service) UpsertReplicationLeasesBatch(leases []clusterModels.Replicatio
 	})
 }
 
-func (s *Service) DeleteReplicationLease(policyID uint, bypassRaft bool) error {
-	if policyID == 0 {
-		return fmt.Errorf("invalid_policy_id")
-	}
-
-	if bypassRaft {
-		return s.DB.Where("policy_id = ?", policyID).Delete(&clusterModels.ReplicationLease{}).Error
-	}
-
-	data, err := json.Marshal(struct {
-		PolicyID uint `json:"policyId"`
-	}{PolicyID: policyID})
-	if err != nil {
-		return fmt.Errorf("failed_to_marshal_replication_lease_delete_payload: %w", err)
-	}
-
-	return s.applyRaftCommand(clusterModels.Command{
-		Type:   "replication_lease",
-		Action: "delete",
-		Data:   data,
-	})
-}
-
 func (s *Service) requireReplicationRaftLeader() error {
-	if s == nil || s.Raft == nil {
+	if s == nil || s.Raft() == nil {
 		return fmt.Errorf("raft_not_initialized")
 	}
-	if s.Raft.State() != raft.Leader {
+	if s.Raft().State() != raft.Leader {
 		return fmt.Errorf("not_leader")
 	}
 	return nil
@@ -1269,81 +1234,6 @@ func (s *Service) DeleteClusterSSHIdentity(nodeUUID string, bypassRaft bool) err
 	})
 }
 
-func (s *Service) ResolveSSHHostForNode(nodeID string) (string, error) {
-	nodeID = strings.TrimSpace(nodeID)
-	if nodeID == "" {
-		return "", fmt.Errorf("node_id_required")
-	}
-
-	nodes, err := s.Nodes()
-	if err == nil {
-		for _, node := range nodes {
-			if strings.TrimSpace(node.NodeUUID) != nodeID {
-				continue
-			}
-			host, _, splitErr := net.SplitHostPort(strings.TrimSpace(node.API))
-			if splitErr == nil && strings.TrimSpace(host) != "" {
-				return strings.TrimSpace(host), nil
-			}
-		}
-	}
-
-	if s.Raft != nil {
-		fut := s.Raft.GetConfiguration()
-		if fut.Error() == nil {
-			if host, found := resolveSSHHostFromRaftConfiguration(nodeID, fut.Configuration()); found {
-				return host, nil
-			}
-		}
-	}
-
-	return "", fmt.Errorf("node_host_not_found")
-}
-
-func resolveSSHHostFromRaftConfiguration(nodeID string, configuration raft.Configuration) (string, bool) {
-	nodeID = strings.TrimSpace(nodeID)
-	for _, server := range configuration.Servers {
-		if strings.TrimSpace(string(server.ID)) != nodeID {
-			continue
-		}
-		address := strings.TrimSpace(string(server.Address))
-		host, _, err := net.SplitHostPort(address)
-		if err == nil && strings.TrimSpace(host) != "" {
-			return strings.TrimSpace(host), true
-		}
-		if address != "" {
-			return address, true
-		}
-	}
-	return "", false
-}
-
-func (s *Service) CanLocalNodeStartProtectedGuest(guestType string, guestID uint) (bool, error) {
-	detail := s.Detail()
-	if detail == nil || strings.TrimSpace(detail.NodeID) == "" {
-		return false, fmt.Errorf("local_node_id_unavailable")
-	}
-	return CanNodeStartProtectedGuest(s.DB, guestType, guestID, strings.TrimSpace(detail.NodeID))
-}
-
-func (s *Service) CanLocalNodeStartProtectedGuestForTransition(
-	guestType string,
-	guestID uint,
-	transitionRunID string,
-) (bool, error) {
-	detail := s.Detail()
-	if detail == nil || strings.TrimSpace(detail.NodeID) == "" {
-		return false, fmt.Errorf("local_node_id_unavailable")
-	}
-	return CanNodeStartProtectedGuestForTransition(
-		s.DB,
-		guestType,
-		guestID,
-		strings.TrimSpace(detail.NodeID),
-		transitionRunID,
-	)
-}
-
 func (s *Service) LocalNodeID() string {
 	if nodeID := strings.TrimSpace(s.NodeID); nodeID != "" {
 		return nodeID
@@ -1356,7 +1246,7 @@ func (s *Service) LocalNodeID() string {
 }
 
 func (s *Service) LocalNodeIsLeader() bool {
-	return s.Raft != nil && s.Raft.State() == raft.Leader
+	return s.Raft() != nil && s.Raft().State() == raft.Leader
 }
 
 func resolveOptional[T any](hasExisting bool, existing T, input *T, defaultVal T) T {

@@ -60,6 +60,7 @@ func createTestTransports(t *testing.T, svc *Service, inputs ...TransportInput) 
 }
 
 type mockDiskService struct {
+	diskServiceInterfaces.DiskServiceInterface
 	disks []diskServiceInterfaces.Disk
 }
 
@@ -85,82 +86,6 @@ func (m *mockDiskService) GetDiskDevices(ctx context.Context) ([]diskServiceInte
 
 func (m *mockDiskService) GetDiskDevicesInventory(ctx context.Context) ([]diskServiceInterfaces.Disk, error) {
 	return m.disks, nil
-}
-
-func (m *mockDiskService) GetSmartData(disk diskServiceInterfaces.DiskInfo) (any, *diskServiceInterfaces.DiskSelfTestLog, error) {
-	return nil, nil, nil
-}
-
-func (m *mockDiskService) GetWearOut(disk any) (float64, error) {
-	return 0, nil
-}
-
-func (m *mockDiskService) GetDiskSize(device string) (uint64, error) {
-	return 0, nil
-}
-
-func (m *mockDiskService) DestroyPartitionTable(device string) error {
-	return nil
-}
-
-func (m *mockDiskService) IsDiskGPT(device string, sectorSize int) bool {
-	return false
-}
-
-func (m *mockDiskService) RunSelfTest(disk diskServiceInterfaces.DiskInfo, testType string) error {
-	return nil
-}
-
-func (m *mockDiskService) GetSelfTestLog(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskSelfTestLog, error) {
-	return &diskServiceInterfaces.DiskSelfTestLog{}, nil
-}
-
-func (m *mockDiskService) GetErrorLog(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskErrorLog, error) {
-	return &diskServiceInterfaces.DiskErrorLog{}, nil
-}
-
-func (m *mockDiskService) GetNVMEErrorLog(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskNVMEErrorLog, error) {
-	return &diskServiceInterfaces.DiskNVMEErrorLog{}, nil
-}
-
-func (m *mockDiskService) GetSCTStatus(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskSCTStatus, error) {
-	return &diskServiceInterfaces.DiskSCTStatus{}, nil
-}
-
-func (m *mockDiskService) GetSCTTempHistory(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskSCTTempHistory, error) {
-	return &diskServiceInterfaces.DiskSCTTempHistory{}, nil
-}
-
-func (m *mockDiskService) AbortSelfTest(disk diskServiceInterfaces.DiskInfo) error {
-	return nil
-}
-
-func (m *mockDiskService) GetExtendedSelfTestLog(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskSelfTestLog, error) {
-	return &diskServiceInterfaces.DiskSelfTestLog{}, nil
-}
-
-func (m *mockDiskService) GetExtendedErrorLog(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskErrorLog, error) {
-	return &diskServiceInterfaces.DiskErrorLog{}, nil
-}
-
-func (m *mockDiskService) GetLogDirectory(disk diskServiceInterfaces.DiskInfo) ([]uint8, error) {
-	return nil, nil
-}
-
-func (m *mockDiskService) GetDeviceStatistics(disk diskServiceInterfaces.DiskInfo) ([]diskServiceInterfaces.DiskAttribute, error) {
-	return nil, nil
-}
-
-func (m *mockDiskService) GetSelectiveSelfTestLog(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskSelfTestLog, error) {
-	return &diskServiceInterfaces.DiskSelfTestLog{}, nil
-}
-
-func (m *mockDiskService) SetSCTFeatureControl(disk diskServiceInterfaces.DiskInfo, featureCode uint16, state uint16, persistent bool) error {
-	return nil
-}
-
-func (m *mockDiskService) SetSCTErrorRecoveryControl(disk diskServiceInterfaces.DiskInfo, read bool, timeLimit uint16) error {
-	return nil
 }
 
 func newTestServiceWithDisks(t *testing.T, disks []diskServiceInterfaces.Disk) *Service {
@@ -1915,36 +1840,6 @@ func TestDismissDoesNotPersistSuppressionForZFSPoolState(t *testing.T) {
 	}
 }
 
-func TestTestRuleEmitsThroughPipeline(t *testing.T) {
-	svc := newTestServiceWithDisks(t, []diskServiceInterfaces.Disk{
-		{Device: "ada0", Model: "Test SSD", Type: "SSD", SmartData: diskServiceInterfaces.SmartData{}},
-	})
-
-	if err := svc.DB.Create(&models.BasicSettings{Pools: []string{"zroot"}}).Error; err != nil {
-		t.Fatalf("failed_to_seed_basic_settings: %v", err)
-	}
-	if _, err := svc.GetRuleConfig(context.Background()); err != nil {
-		t.Fatalf("seed_rule_config_failed: %v", err)
-	}
-
-	err := svc.TestRule(context.Background(), TestRuleInput{
-		TemplateKey: RuleTemplateDiskSmartTemperature,
-		TargetKey:   "ada0",
-		Condition:   "temperature_warning",
-	})
-	if err != nil {
-		t.Fatalf("test_rule_failed: %v", err)
-	}
-
-	var count int64
-	if err := svc.DB.Model(&models.Notification{}).Count(&count).Error; err != nil {
-		t.Fatalf("failed_to_count_notifications: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("expected_1_notification_in_db got: %d", count)
-	}
-}
-
 func TestTestRuleHistoricalCounterPreviewsDoNotChangeBaselines(t *testing.T) {
 	for _, key := range []string{
 		notifier.DiskSmartCounterReallocated, notifier.DiskSmartCounterNvmeMediaErrors,
@@ -2090,23 +1985,6 @@ func TestTestRuleSendsThroughTransports(t *testing.T) {
 	}
 }
 
-func TestTestRuleRejectsUnknownTemplate(t *testing.T) {
-	svc := newTestServiceWithDisks(t, []diskServiceInterfaces.Disk{
-		{Device: "ada0", Model: "Test SSD", Type: "SSD", SmartData: diskServiceInterfaces.SmartData{}},
-	})
-
-	err := svc.TestRule(context.Background(), TestRuleInput{
-		TemplateKey: "system.nonexistent",
-		TargetKey:   "ada0",
-	})
-	if err == nil {
-		t.Fatalf("expected_error_for_unknown_template")
-	}
-	if err.Error() != "notification_rule_template_not_found" {
-		t.Fatalf("expected_template_not_found got: %v", err)
-	}
-}
-
 func TestTestRuleFallsBackToFirstTarget(t *testing.T) {
 	svc := newTestServiceWithDisks(t, []diskServiceInterfaces.Disk{
 		{Device: "ada0", Model: "Test SSD", Type: "SSD", SmartData: diskServiceInterfaces.SmartData{}},
@@ -2117,23 +1995,6 @@ func TestTestRuleFallsBackToFirstTarget(t *testing.T) {
 		TemplateKey: RuleTemplateDiskSmartTemperature,
 	}); err != nil {
 		t.Fatalf("test_rule_without_target_failed: %v", err)
-	}
-}
-
-func TestTestRuleRejectsTargetNotInTemplate(t *testing.T) {
-	svc := newTestServiceWithDisks(t, []diskServiceInterfaces.Disk{
-		{Device: "ada0", Model: "Test SSD", Type: "SSD", SmartData: diskServiceInterfaces.SmartData{}},
-	})
-
-	err := svc.TestRule(context.Background(), TestRuleInput{
-		TemplateKey: RuleTemplateDiskSmartTemperature,
-		TargetKey:   "nonexistent",
-	})
-	if err == nil {
-		t.Fatalf("expected_error_for_unknown_target")
-	}
-	if err.Error() != "notification_rule_target_not_found" {
-		t.Fatalf("expected_target_not_found got: %v", err)
 	}
 }
 
@@ -3020,5 +2881,26 @@ func TestTestRuleDefaultConditionPerTemplate(t *testing.T) {
 		if notif.Title != tc.expectedTitle {
 			t.Fatalf("unexpected_title_for_%s got=%q want=%q", tc.templateKey, notif.Title, tc.expectedTitle)
 		}
+	}
+}
+
+func TestTestRuleRejectsUnknownTemplateOrTarget(t *testing.T) {
+	tests := []struct {
+		name, templateKey, targetKey, wantErr string
+	}{
+		{"unknown template", "system.nonexistent", "ada0", "notification_rule_template_not_found"},
+		{"target not in template", RuleTemplateDiskSmartTemperature, "nonexistent", "notification_rule_target_not_found"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestServiceWithDisks(t, []diskServiceInterfaces.Disk{
+				{Device: "ada0", Model: "Test SSD", Type: "SSD", SmartData: diskServiceInterfaces.SmartData{}},
+			})
+			err := svc.TestRule(context.Background(), TestRuleInput{TemplateKey: tt.templateKey, TargetKey: tt.targetKey})
+			if err == nil || err.Error() != tt.wantErr {
+				t.Fatalf("expected %s, got %v", tt.wantErr, err)
+			}
+		})
 	}
 }

@@ -11,7 +11,6 @@ import (
 	clusterModels "github.com/alchemillahq/sylve/internal/db/models/cluster"
 	jailModels "github.com/alchemillahq/sylve/internal/db/models/jail"
 	vmModels "github.com/alchemillahq/sylve/internal/db/models/vm"
-	"github.com/alchemillahq/sylve/internal/testutil"
 )
 
 func inventoryReportJSON(t *testing.T, report GuestIdentityInventoryReport) string {
@@ -62,7 +61,7 @@ func TestBuildGuestIdentityInventoryDigestIgnoresInformationalMetadata(t *testin
 }
 
 func TestScanLocalGuestIdentityInventoryReportsVMJailSharedID(t *testing.T) {
-	db := testutil.NewSQLiteTestDB(t, &vmModels.VM{}, &jailModels.Jail{})
+	db := newClusterServiceTestDB(t, &vmModels.VM{}, &jailModels.Jail{})
 	if err := db.Create(&vmModels.VM{RID: 100, Name: "vm-100"}).Error; err != nil {
 		t.Fatalf("create VM: %v", err)
 	}
@@ -101,7 +100,7 @@ func TestBuildGuestIdentityInventoryReportReportsCrossNodeConflict(t *testing.T)
 }
 
 func TestScanLocalGuestIdentityInventoryClean(t *testing.T) {
-	db := testutil.NewSQLiteTestDB(t, &vmModels.VM{}, &jailModels.Jail{})
+	db := newClusterServiceTestDB(t, &vmModels.VM{}, &jailModels.Jail{})
 	if err := db.Create(&vmModels.VM{RID: 11, Name: "vm-11"}).Error; err != nil {
 		t.Fatalf("create VM: %v", err)
 	}
@@ -131,7 +130,7 @@ func TestScanLocalGuestIdentityInventoryClean(t *testing.T) {
 
 func TestBuildGuestIdentityInventoryReportReportsInvalidFields(t *testing.T) {
 	report := BuildGuestIdentityInventoryReport([]GuestIdentityInventoryEntry{
-		{NodeID: " ", GuestType: "container", GuestID: 0, RecordID: 9, Name: "bad"},
+		{NodeID: " ", GuestType: "pod", GuestID: 0, RecordID: 9, Name: "bad"},
 	})
 	wantReasons := []string{
 		GuestIdentityInventoryConflictInvalidGuestID,
@@ -169,7 +168,7 @@ func TestBuildGuestIdentityInventoryReportRejectsOutOfRangeIDAndOversizedNode(t 
 }
 
 func TestRequireGuestIDAvailableStandaloneUsesSharedLocalNamespace(t *testing.T) {
-	db := testutil.NewSQLiteTestDB(
+	db := newClusterServiceTestDB(
 		t,
 		&clusterModels.Cluster{},
 		&vmModels.VM{},
@@ -190,17 +189,21 @@ func TestRequireGuestIDAvailableStandaloneUsesSharedLocalNamespace(t *testing.T)
 		!strings.Contains(err.Error(), "guest_id_already_in_use") {
 		t.Fatalf("occupied standalone guest ID error = %v", err)
 	}
+	// A leftover duplicate keeps its own ID taken but mustn't block others.
 	if err := db.Create(&vmModels.VM{RID: 700, Name: "vm-700"}).Error; err != nil {
 		t.Fatalf("seed conflicting VM: %v", err)
 	}
-	if err := service.RequireGuestIDAvailable(t.Context(), 701); err == nil ||
-		!strings.Contains(err.Error(), "guest_identity_inventory_conflict") {
-		t.Fatalf("dirty standalone inventory error = %v", err)
+	if err := service.RequireGuestIDAvailable(t.Context(), 701); err != nil {
+		t.Fatalf("unrelated ID blocked by a duplicate elsewhere: %v", err)
+	}
+	if err := service.RequireGuestIDAvailable(t.Context(), 700); err == nil ||
+		!strings.Contains(err.Error(), "guest_id_already_in_use") {
+		t.Fatalf("duplicated guest ID error = %v", err)
 	}
 }
 
 func TestRequireGuestIDAvailableClusteredWithoutRaftFailsClosed(t *testing.T) {
-	db := testutil.NewSQLiteTestDB(
+	db := newClusterServiceTestDB(
 		t,
 		&clusterModels.Cluster{},
 		&vmModels.VM{},
@@ -218,7 +221,7 @@ func TestRequireGuestIDAvailableClusteredWithoutRaftFailsClosed(t *testing.T) {
 }
 
 func TestRequireGuestRestorePlacementIgnoresStaleHealthRows(t *testing.T) {
-	db := testutil.NewSQLiteTestDB(
+	db := newClusterServiceTestDB(
 		t,
 		&clusterModels.Cluster{},
 		&clusterModels.ClusterNode{},
@@ -265,7 +268,7 @@ func TestRequireGuestRestorePlacementRequiresOneExpectedRegistration(t *testing.
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			db := testutil.NewSQLiteTestDB(
+			db := newClusterServiceTestDB(
 				t,
 				&clusterModels.Cluster{},
 				&vmModels.VM{},

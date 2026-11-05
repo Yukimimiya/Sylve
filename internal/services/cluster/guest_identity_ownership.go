@@ -40,7 +40,7 @@ func (s *Service) authoritativeGuestIdentityMove(
 	guestKind = strings.ToLower(strings.TrimSpace(guestKind))
 	expectedOwnerNodeID = strings.TrimSpace(expectedOwnerNodeID)
 	newOwnerNodeID = strings.TrimSpace(newOwnerNodeID)
-	if !clusterModels.ValidGuestIdentityKind(guestKind) || guestID == 0 ||
+	if !clusterModels.ValidReplicationGuestType(guestKind) || guestID == 0 ||
 		guestID > clusterModels.GuestIdentityMaxID || expectedOwnerNodeID == "" ||
 		newOwnerNodeID == "" || expectedOwnerNodeID == newOwnerNodeID {
 		return move, fmt.Errorf("guest_identity_move_invalid")
@@ -156,7 +156,7 @@ func (s *Service) MoveGuestIdentityOwner(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if s == nil || s.DB == nil || s.Raft == nil || s.Raft.State() != raft.Leader {
+	if s == nil || s.DB == nil || s.Raft() == nil || s.Raft().State() != raft.Leader {
 		return fmt.Errorf("guest_identity_move_requires_leader")
 	}
 	guestKind = strings.ToLower(strings.TrimSpace(guestKind))

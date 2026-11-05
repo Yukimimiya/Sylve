@@ -86,7 +86,7 @@ func CanMutateProtectedGuestStorageTopology(db *gorm.DB, guestType string, guest
 		return false, fmt.Errorf("replication_topology_guard_input_invalid")
 	}
 	guestType = strings.TrimSpace(strings.ToLower(guestType))
-	if guestType != clusterModels.ReplicationGuestTypeVM && guestType != clusterModels.ReplicationGuestTypeJail {
+	if !clusterModels.ValidReplicationGuestType(guestType) {
 		return false, fmt.Errorf("invalid_guest_type")
 	}
 	if err := requireJailCreationMutationAllowed(db, guestType, guestID, ""); err != nil {
@@ -279,14 +279,4 @@ func replicationPolicyTransitionInProgress(state string) bool {
 
 func CanNodeStartProtectedGuest(db *gorm.DB, guestType string, guestID uint, localNodeID string) (bool, error) {
 	return canNodeMutateProtectedGuest(db, guestType, guestID, localNodeID, "", "start", "")
-}
-
-func CanNodeStartProtectedGuestForTransition(
-	db *gorm.DB,
-	guestType string,
-	guestID uint,
-	localNodeID string,
-	transitionRunID string,
-) (bool, error) {
-	return CanNodeMutateProtectedGuestForTransition(db, guestType, guestID, localNodeID, transitionRunID)
 }

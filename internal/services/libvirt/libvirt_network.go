@@ -244,9 +244,12 @@ func (s *Service) syncVMNetworksWithDB(ctx context.Context, db *gorm.DB, rid uin
 		devicesElement = domainElement.CreateElement("devices")
 	}
 
-	// VM network rows are authoritative for bridge interfaces managed by Sylve.
-	// Rebuilding them also removes stale legacy/raw-MAC interfaces reliably.
-	for _, iface := range doc.FindElements("//interface[@type='bridge']") {
+	// VM network rows are authoritative for bridge and SLIRP interfaces managed
+	// by Sylve. Rebuilding them also removes stale legacy/raw-MAC interfaces.
+	for _, iface := range doc.FindElements("//interface") {
+		if ifaceType := iface.SelectAttrValue("type", ""); ifaceType != "bridge" && ifaceType != "user" {
+			continue
+		}
 		if parent := iface.Parent(); parent != nil {
 			parent.RemoveChild(iface)
 		}
@@ -300,11 +303,15 @@ func (s *Service) syncVMNetworksWithDB(ctx context.Context, db *gorm.DB, rid uin
 		}
 
 		iface := devicesElement.CreateElement("interface")
-		iface.CreateAttr("type", "bridge")
 		macElement := iface.CreateElement("mac")
 		macElement.CreateAttr("address", mac)
-		sourceElement := iface.CreateElement("source")
-		sourceElement.CreateAttr("bridge", sw.Bridge)
+		if sw.Type == networkAttachment.SwitchTypeSlirp {
+			iface.CreateAttr("type", "user")
+		} else {
+			iface.CreateAttr("type", "bridge")
+			sourceElement := iface.CreateElement("source")
+			sourceElement.CreateAttr("bridge", sw.Bridge)
+		}
 		modelElement := iface.CreateElement("model")
 		modelElement.CreateAttr("type", emulation)
 	}
@@ -783,92 +790,4 @@ func (s *Service) FindAndChangeMAC(rid uint, oldMac string, newMac string) error
 	}
 
 	return nil
-}
-
-func (s *Service) FindVmByMac(mac string) (vmModels.VM, error) {
-	var vm vmModels.VM
-
-	vms, err := s.FindVMsByMac(mac)
-	if err != nil {
-		return vm, fmt.Errorf("failed_to_find_network: %w", err)
-	}
-
-	if len(vms) == 0 {
-		return vm, fmt.Errorf("failed_to_find_network: %w", gorm.ErrRecordNotFound)
-	}
-
-	for _, candidate := range vms {
-		if candidate.WoL {
-			return candidate, nil
-		}
-	}
-
-	vm = vms[0]
-	return vm, fmt.Errorf("vm_wol_disabled: %s", vm.Name)
-}
-
-func (s *Service) FindVMsByMac(mac string) ([]vmModels.VM, error) {
-	mac = strings.ToLower(strings.TrimSpace(mac))
-	if mac == "" {
-		return []vmModels.VM{}, nil
-	}
-
-	var vmIDs []uint
-	err := s.DB.
-		Session(&gorm.Session{SkipHooks: true}).
-		Model(&vmModels.Network{}).
-		Joins("LEFT JOIN objects ON vm_networks.mac_id = objects.id").
-		Joins("LEFT JOIN object_entries ON object_entries.object_id = objects.id").
-		Where("LOWER(object_entries.value) = ? OR LOWER(vm_networks.mac) = ?", mac, mac).
-		Distinct("vm_networks.vm_id").
-		Pluck("vm_networks.vm_id", &vmIDs).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed_to_find_vm_networks: %w", err)
-	}
-
-	if len(vmIDs) == 0 {
-		return []vmModels.VM{}, nil
-	}
-
-	var vms []vmModels.VM
-	if err := s.DB.
-		Where("id IN ?", vmIDs).
-		Find(&vms).Error; err != nil {
-		return nil, fmt.Errorf("failed_to_find_vms: %w", err)
-	}
-
-	return vms, nil
-}
-
-func (s *Service) FindJailsByMac(mac string) ([]jailModels.Jail, error) {
-	mac = strings.ToLower(strings.TrimSpace(mac))
-	if mac == "" {
-		return []jailModels.Jail{}, nil
-	}
-
-	var jailIDs []uint
-	err := s.DB.
-		Session(&gorm.Session{SkipHooks: true}).
-		Model(&jailModels.Network{}).
-		Joins("LEFT JOIN objects ON jail_networks.mac_id = objects.id").
-		Joins("LEFT JOIN object_entries ON object_entries.object_id = objects.id").
-		Where("LOWER(object_entries.value) = ?", mac).
-		Distinct("jail_networks.jid").
-		Pluck("jail_networks.jid", &jailIDs).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed_to_find_jail_networks: %w", err)
-	}
-
-	if len(jailIDs) == 0 {
-		return []jailModels.Jail{}, nil
-	}
-
-	var jails []jailModels.Jail
-	if err := s.DB.
-		Where("id IN ?", jailIDs).
-		Find(&jails).Error; err != nil {
-		return nil, fmt.Errorf("failed_to_find_jails: %w", err)
-	}
-
-	return jails, nil
 }

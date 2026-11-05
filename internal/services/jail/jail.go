@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"github.com/alchemillahq/sylve/internal/config"
 	"github.com/alchemillahq/sylve/internal/db/models"
 	clusterModels "github.com/alchemillahq/sylve/internal/db/models/cluster"
+	containerModels "github.com/alchemillahq/sylve/internal/db/models/container"
 	jailModels "github.com/alchemillahq/sylve/internal/db/models/jail"
 	networkModels "github.com/alchemillahq/sylve/internal/db/models/network"
 	vmModels "github.com/alchemillahq/sylve/internal/db/models/vm"
@@ -34,9 +36,9 @@ import (
 	networkServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/network"
 	systemServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/system"
 	"github.com/alchemillahq/sylve/internal/logger"
-	"github.com/alchemillahq/sylve/internal/mountutil"
 	notifier "github.com/alchemillahq/sylve/internal/notifications"
 	clusterService "github.com/alchemillahq/sylve/internal/services/cluster"
+	"github.com/alchemillahq/sylve/pkg/storage/mount"
 	"github.com/alchemillahq/sylve/pkg/utils"
 	"gorm.io/gorm"
 )
@@ -411,6 +413,9 @@ func (s *Service) validateCreate(ctx context.Context, data jailServiceInterfaces
 		if _, err := s.inspectZFSSource(ctx, *data.ZFSSource, data.Pool, operationID); err != nil {
 			return err
 		}
+		if inUse, err := containerModels.DatasetsInUse(s.DB, []string{data.ZFSSource.GUID}); err != nil || inUse {
+			return errors.Join(fmt.Errorf("zfs_source_in_use_by_container"), err)
+		}
 	} else {
 		return fmt.Errorf("download_uuid_or_bootstrap_name_required")
 	}
@@ -714,7 +719,7 @@ func (s *Service) destroyStorageDatasetForDelete(ctx context.Context, datasetNam
 		if mountpointErr != nil {
 			return fmt.Errorf("failed_to_validate_storage_dataset_mountpoint: %w", mountpointErr)
 		}
-		if unmountErr := mountutil.UnmountDescendants(
+		if unmountErr := mount.UnmountDescendants(
 			ctx,
 			datasetName,
 			mountpoint,
@@ -752,29 +757,6 @@ func appendJailCreateCleanupWarning(warnings *[]string, ctid uint, code string, 
 	}
 
 	*warnings = append(*warnings, message)
-}
-
-func uniqueUintValues(values []uint) []uint {
-	if len(values) == 0 {
-		return []uint{}
-	}
-
-	seen := make(map[uint]struct{}, len(values))
-	out := make([]uint, 0, len(values))
-	for _, value := range values {
-		if value == 0 {
-			continue
-		}
-
-		if _, exists := seen[value]; exists {
-			continue
-		}
-
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-
-	return out
 }
 
 func (s *Service) hasStaleJailRootDatasetForCreate(ctx context.Context, ctid uint) (bool, error) {
@@ -837,7 +819,7 @@ func (s *Service) validateNoStaleJailCreateArtifacts(ctx context.Context, ctid u
 }
 
 func (s *Service) cleanupAutoCreatedJailCreateObjects(ctid uint, autoCreatedIDs []uint, warnings *[]string) {
-	for _, objID := range uniqueUintValues(autoCreatedIDs) {
+	for _, objID := range utils.UniqueIDs(autoCreatedIDs) {
 		if s.NetworkService != nil {
 			used, _, err := s.NetworkService.IsObjectUsed(objID)
 			if err != nil {
@@ -1058,7 +1040,7 @@ func (s *Service) CreateJailConfig(data jailModels.Jail, mountPoint string) (str
 	}
 
 	// devfs mount and rules
-	if !config.IsDevFSDisabled() && data.AllowedOptions != nil && utils.StringInSlice("allow.mount.devfs", data.AllowedOptions) {
+	if !config.IsDevFSDisabled() && data.AllowedOptions != nil && slices.Contains(data.AllowedOptions, "allow.mount.devfs") {
 		cfg += "\tmount.devfs;\n"
 
 		if data.DevFSRuleset != "" {
@@ -1724,7 +1706,7 @@ func (s *Service) loadJailDeletePlan(ctx context.Context, ctID uint) (jailDelete
 		Pluck("mac_id", &plan.macIDs).Error; err != nil {
 		return plan, fmt.Errorf("failed_to_collect_jail_mac_ids_for_delete: %w", err)
 	}
-	plan.macIDs = uniqueUintValues(plan.macIDs)
+	plan.macIDs = utils.UniqueIDs(plan.macIDs)
 	sort.Slice(plan.macIDs, func(i, j int) bool { return plan.macIDs[i] < plan.macIDs[j] })
 
 	var networkIDs []uint

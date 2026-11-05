@@ -27,10 +27,12 @@ import (
 	systemServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/system"
 	utilitiesServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/utilities"
 	zfsServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/zfs"
+	"github.com/alchemillahq/sylve/internal/logger"
 	"github.com/alchemillahq/sylve/internal/network/interfaceref"
 	"github.com/alchemillahq/sylve/internal/services/auth"
 	"github.com/alchemillahq/sylve/internal/services/certificates"
 	"github.com/alchemillahq/sylve/internal/services/cluster"
+	"github.com/alchemillahq/sylve/internal/services/container"
 	"github.com/alchemillahq/sylve/internal/services/directoryservices"
 	"github.com/alchemillahq/sylve/internal/services/disk"
 	"github.com/alchemillahq/sylve/internal/services/dynamicdns"
@@ -75,6 +77,7 @@ type ServiceRegistry struct {
 	ZeltaService       *zelta.Service
 	MigrationService   *migration.Service
 	BootstrapService   *bootstrap.Service
+	ContainerService   *container.Service
 	GzfsClient         *gzfs.Client
 }
 
@@ -107,9 +110,8 @@ func NewService[T any](db *gorm.DB, dependencies ...interface{}) interface{} {
 		systemService := dependencies[5].(systemServiceInterfaces.SystemServiceInterface)
 		sambaService := dependencies[6].(sambaServiceInterfaces.SambaServiceInterface)
 		jailService := dependencies[7].(jailServiceInterfaces.JailServiceInterface)
-		clusterService := dependencies[8].(clusterServiceInterfaces.ClusterServiceInterface)
-		iscsiService := dependencies[9].(iscsiServiceInterfaces.ISCSIServiceInterface)
-		mdnsService := dependencies[10].(mdnsServiceInterfaces.MdnsServiceInterface)
+		iscsiService := dependencies[8].(iscsiServiceInterfaces.ISCSIServiceInterface)
+		mdnsService := dependencies[9].(mdnsServiceInterfaces.MdnsServiceInterface)
 
 		return startup.NewStartupService(db,
 			infoService,
@@ -120,7 +122,6 @@ func NewService[T any](db *gorm.DB, dependencies ...interface{}) interface{} {
 			systemService,
 			sambaService,
 			jailService,
-			clusterService,
 			iscsiService,
 			mdnsService)
 	case *disk.Service:
@@ -263,13 +264,22 @@ func NewServiceRegistry(db *gorm.DB, telemetryDB *gorm.DB) *ServiceRegistry {
 		systemService,
 		sambaService,
 		jailService,
-		clusterService,
 		iscsiService,
 		mdnsService,
 	).(*startup.Service)
 	startupService.Bootstrap = bootstrapService
 	startupService.Directory = directoryService
 	startupService.NFS = nfsService
+	containerService, err := container.NewContainerService(db, gzfs)
+	if err != nil {
+		logger.L.Fatal().Err(err).Msg("failed to initialize container service")
+	}
+	containerService.SetGuestIdentityCoordinator(clusterService.(*cluster.Service))
+	containerService.PrepareHost = startupService.PrepareContainerHost
+	containerService.ApplyFirewall = networkService.(*network.Service).ApplyFirewallIfEnabled
+	sysSvc.Containers = containerService
+	startupService.Containers = containerService
+	zfsSvc.ReleasePool = containerService.ReleasePool
 
 	return &ServiceRegistry{
 		AuthService:        authService.(serviceInterfaces.AuthServiceInterface),
@@ -293,6 +303,7 @@ func NewServiceRegistry(db *gorm.DB, telemetryDB *gorm.DB) *ServiceRegistry {
 		ZeltaService:       zeltaService.(*zelta.Service),
 		MigrationService:   migrationService,
 		BootstrapService:   bootstrapService,
+		ContainerService:   containerService,
 		GzfsClient:         gzfs,
 	}
 }

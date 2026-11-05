@@ -155,7 +155,7 @@ func setupBackupForwardTestCluster(t *testing.T, nodeIDs ...string) []*backupFor
 		}
 		nodes = append(nodes, &backupForwardTestNode{
 			id: nodeID, address: address, transport: transport, raft: r,
-			service: &clusterService.Service{DB: database, Raft: r, NodeID: nodeID},
+			service: withRaft(&clusterService.Service{DB: database, NodeID: nodeID}, r),
 		})
 	}
 
@@ -444,7 +444,7 @@ func TestBackupRestoreUsesStrictInventoryInsteadOfHealthRows(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			database := testutil.NewSQLiteTestDB(
+			database := newClusterHandlerTestDB(
 				t,
 				&clusterModels.BackupTarget{},
 				&clusterModels.BackupJob{},

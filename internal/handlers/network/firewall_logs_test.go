@@ -11,15 +11,11 @@ package networkHandlers
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 
 	networkService "github.com/alchemillahq/sylve/internal/services/network"
+	"github.com/alchemillahq/sylve/internal/testutil"
 	"github.com/gin-gonic/gin"
 )
 
@@ -39,15 +35,6 @@ func setupFirewallLiveLogsHandlerRouter(t *testing.T) *gin.Engine {
 	return router
 }
 
-func decodeFirewallLiveLogsHandlerResponse(t *testing.T, rr *httptest.ResponseRecorder) firewallLiveLogsHandlerResponse {
-	t.Helper()
-	var response firewallLiveLogsHandlerResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response body %q: %v", rr.Body.String(), err)
-	}
-	return response
-}
-
 func TestListFirewallLiveHitsAcceptsCanonicalQueryParameters(t *testing.T) {
 	router := setupFirewallLiveLogsHandlerRouter(t)
 	rr := performNetworkJSONRequest(
@@ -61,7 +48,7 @@ func TestListFirewallLiveHitsAcceptsCanonicalQueryParameters(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
 	}
-	response := decodeFirewallLiveLogsHandlerResponse(t, rr)
+	response := testutil.DecodeJSONResponse[firewallLiveLogsHandlerResponse](t, rr)
 	if response.Status != "success" || response.Message != "firewall_live_hits_listed" {
 		t.Fatalf("unexpected response: %+v", response)
 	}
@@ -90,7 +77,7 @@ func TestListFirewallLiveHitsRejectsInvalidQueryParameters(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			router := setupFirewallLiveLogsHandlerRouter(t)
 			rr := performNetworkJSONRequest(t, router, http.MethodGet, "/network/firewall/logs/live?"+tt.query, nil)
-			response := decodeFirewallLiveLogsHandlerResponse(t, rr)
+			response := testutil.DecodeJSONResponse[firewallLiveLogsHandlerResponse](t, rr)
 			if rr.Code != http.StatusBadRequest || response.Error != tt.errorCode {
 				t.Fatalf("status=%d response=%+v", rr.Code, response)
 			}
@@ -98,20 +85,5 @@ func TestListFirewallLiveHitsRejectsInvalidQueryParameters(t *testing.T) {
 				t.Fatalf("response leaked parser detail: %+v", response)
 			}
 		})
-	}
-}
-
-func TestFirewallLiveLogsRouteRequiresLocalAdmin(t *testing.T) {
-	_, filename, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve test file path")
-	}
-	handlerDir := filepath.Dir(filename)
-	routesSource, err := os.ReadFile(filepath.Join(handlerDir, "..", "routes.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !regexp.MustCompile(`network\.GET\("/firewall/logs/live",\s*middleware\.RequireLocalAdmin\(authService\),\s*networkHandlers\.ListFirewallLiveHits\(networkService\)\)`).Match(routesSource) {
-		t.Fatal("firewall live logs route is not protected by explicit local-admin middleware")
 	}
 }

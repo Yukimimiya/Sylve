@@ -221,6 +221,8 @@ func (s *Service) resolveSwitchName(switchID uint, switchType string) (string, e
 			return "", fmt.Errorf("failed_to_get_manual_switch: %w", err)
 		}
 		return sw.Name, nil
+	case networkAttachment.SwitchTypeSlirp:
+		return networkAttachment.SlirpSwitchName, nil
 	default:
 		return "", fmt.Errorf("invalid_switch_type")
 	}
@@ -252,6 +254,11 @@ func (s *Service) resolveSwitchID(switchName, switchType string) (uint, error) {
 			return 0, fmt.Errorf("failed_to_get_manual_switch: %w", err)
 		}
 		return sw.ID, nil
+	case networkAttachment.SwitchTypeSlirp:
+		if !networkAttachment.IsSlirpSwitchName(switchName) {
+			return 0, fmt.Errorf("switch_not_found")
+		}
+		return 0, nil
 	default:
 		return 0, fmt.Errorf("invalid_switch_type")
 	}
@@ -1056,10 +1063,10 @@ func (s *Service) createVMFromTemplateTarget(
 			}
 
 			for idx, network := range template.Networks {
-				switchID := networkSwitchIDs[idx]
-				if switchID == 0 {
+				if strings.TrimSpace(network.SwitchName) == "" {
 					continue
 				}
+				switchID := networkSwitchIDs[idx]
 
 				macID, err := s.createUniqueMACObject(tx, fmt.Sprintf("%s-net-%d", target.Name, idx+1))
 				if err != nil {
@@ -1235,7 +1242,7 @@ func (s *Service) PreflightConvertVMToTemplate(
 func (s *Service) sourceVMNetworksForTemplate(vm vmModels.VM) ([]vmModels.VMTemplateNetwork, error) {
 	templateNetworks := make([]vmModels.VMTemplateNetwork, 0, len(vm.Networks))
 	for _, network := range vm.Networks {
-		if network.SwitchID == 0 {
+		if network.SwitchID == 0 && network.SwitchType != networkAttachment.SwitchTypeSlirp {
 			continue
 		}
 		switchName, err := s.resolveSwitchName(network.SwitchID, network.SwitchType)
@@ -1427,8 +1434,28 @@ func (s *Service) CreateVMsFromTemplate(ctx context.Context, templateID uint, re
 		if identityReservation == nil || err == nil {
 			return
 		}
-		if releaseErr := s.guestIdentityCoordinator.ReleaseGuestIdentities(ctx, *identityReservation); releaseErr != nil {
-			err = errors.Join(err, fmt.Errorf("guest_identity_release_failed: %w", releaseErr))
+		// Release the IDs whose VMs are gone. A VM that failed to clean up
+		// still holds its ID, so finalize that part rather than letting it
+		// block the release of the whole batch.
+		released, kept := *identityReservation, *identityReservation
+		released.Entries, kept.Entries = nil, nil
+		for _, entry := range identityReservation.Entries {
+			var count int64
+			if countErr := s.DB.Model(&vmModels.VM{}).Where("rid = ?", entry.GuestID).Count(&count).Error; countErr == nil && count == 0 {
+				released.Entries = append(released.Entries, entry)
+			} else {
+				kept.Entries = append(kept.Entries, entry)
+			}
+		}
+		if len(released.Entries) > 0 {
+			if releaseErr := s.guestIdentityCoordinator.ReleaseGuestIdentities(ctx, released); releaseErr != nil {
+				err = errors.Join(err, fmt.Errorf("guest_identity_release_failed: %w", releaseErr))
+			}
+		}
+		if len(kept.Entries) > 0 {
+			if finalizeErr := s.guestIdentityCoordinator.FinalizeGuestIdentities(ctx, kept); finalizeErr != nil {
+				err = errors.Join(err, fmt.Errorf("guest_identity_finalize_failed: %w", finalizeErr))
+			}
 		}
 	}()
 
@@ -1519,17 +1546,4 @@ func (s *Service) DeleteVMTemplate(ctx context.Context, templateID uint) error {
 
 	s.emitLeftPanelRefresh(fmt.Sprintf("vm_template_delete_%d", templateID))
 	return nil
-}
-
-func (s *Service) sourceVMStoragesForTemplate(vm vmModels.VM) []vmModels.Storage {
-	out := make([]vmModels.Storage, 0, len(vm.Storages))
-	for _, storage := range vm.Storages {
-		if storage.Type == vmModels.VMStorageTypeRaw || storage.Type == vmModels.VMStorageTypeZVol {
-			out = append(out, storage)
-		}
-	}
-	slices.SortFunc(out, func(a, b vmModels.Storage) int {
-		return a.BootOrder - b.BootOrder
-	})
-	return out
 }

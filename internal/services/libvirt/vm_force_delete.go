@@ -149,7 +149,31 @@ func (s *Service) PurgeVMRegistration(rid uint, cleanUpMacs bool) ([]string, err
 	if err := s.RequireVMDeletionDetached(rid); err != nil {
 		return nil, err
 	}
-	return s.purgeVMRegistrationLocal(rid, cleanUpMacs)
+
+	// Release this node's claim on the ID once the registration is gone.
+	// Retirement skips this: replication has already moved the claim.
+	var identityClaim *clusterServiceInterfaces.GuestIdentityReservation
+	if s.guestIdentityCoordinator != nil {
+		claim, err := s.guestIdentityCoordinator.GuestIdentityClaim(
+			context.Background(), clusterModels.ReplicationGuestTypeVM, rid, "",
+		)
+		if err == nil {
+			identityClaim = &claim
+			defer s.guestIdentityCoordinator.CancelGuestIdentityClaim(claim)
+		}
+	}
+	warnings, err := s.purgeVMRegistrationLocal(rid, cleanUpMacs)
+	if err != nil || identityClaim == nil {
+		return warnings, err
+	}
+	if err := s.DB.Model(&vmModels.VM{}).Where("rid = ?", rid).Count(&registrationCount).Error; err != nil || registrationCount != 0 {
+		appendForceRemoveWarning(&warnings, rid, "guest_identity_release_deferred_cleanup_incomplete", err)
+		return warnings, nil
+	}
+	if err := s.guestIdentityCoordinator.ReleaseGuestIdentities(context.Background(), *identityClaim); err != nil {
+		appendForceRemoveWarning(&warnings, rid, "guest_identity_release_pending", err)
+	}
+	return warnings, nil
 }
 
 func (s *Service) PurgeVMRegistrationForRetirement(rid uint, cleanUpMacs bool) ([]string, error) {
@@ -363,7 +387,7 @@ func (s *Service) forceRemoveVMDBRecords(rid uint, cleanUpMacs bool, warnings *[
 		}
 	}
 
-	cleanupDatasetIDs := uniqueUintValues(datasetIDs)
+	cleanupDatasetIDs := utils.UniqueIDs(datasetIDs)
 	patternDatasetIDs := make([]uint, 0)
 	if err := s.DB.Model(&vmModels.VMStorageDataset{}).
 		Where("name LIKE ? OR name LIKE ? OR name LIKE ? OR name LIKE ?",
@@ -374,7 +398,7 @@ func (s *Service) forceRemoveVMDBRecords(rid uint, cleanUpMacs bool, warnings *[
 		Pluck("id", &patternDatasetIDs).Error; err != nil {
 		appendForceRemoveWarning(warnings, rid, "failed_to_lookup_vm_storage_dataset_rows_by_name", err)
 	} else {
-		cleanupDatasetIDs = uniqueUintValues(append(cleanupDatasetIDs, patternDatasetIDs...))
+		cleanupDatasetIDs = utils.UniqueIDs(append(cleanupDatasetIDs, patternDatasetIDs...))
 	}
 
 	for _, datasetID := range cleanupDatasetIDs {
@@ -395,7 +419,7 @@ func (s *Service) forceRemoveVMDBRecords(rid uint, cleanUpMacs bool, warnings *[
 	}
 
 	if cleanUpMacs {
-		macIDs = uniqueUintValues(macIDs)
+		macIDs = utils.UniqueIDs(macIDs)
 		if len(macIDs) > 0 {
 			if err := s.DB.Where("object_id IN ?", macIDs).Delete(&networkModels.ObjectEntry{}).Error; err != nil {
 				appendForceRemoveWarning(warnings, rid, "failed_to_delete_mac_object_entries_for_force_delete", err)
@@ -408,24 +432,4 @@ func (s *Service) forceRemoveVMDBRecords(rid uint, cleanUpMacs bool, warnings *[
 			}
 		}
 	}
-}
-
-func uniqueUintValues(values []uint) []uint {
-	if len(values) == 0 {
-		return []uint{}
-	}
-
-	seen := make(map[uint]struct{}, len(values))
-	out := make([]uint, 0, len(values))
-	for _, value := range values {
-		if value == 0 {
-			continue
-		}
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	return out
 }

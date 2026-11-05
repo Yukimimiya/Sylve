@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 
 	"github.com/alchemillahq/sylve/internal"
@@ -92,6 +91,16 @@ func IsPAMEnabled() bool {
 	}
 
 	return ParsedConfig.Auth.EnablePAM
+}
+
+func GetPAMService() string {
+	if ParsedConfig != nil {
+		if service := strings.TrimSpace(ParsedConfig.Auth.PAMService); service != "" {
+			return service
+		}
+	}
+
+	return "login"
 }
 
 func IsRunningInJail() bool {
@@ -180,7 +189,7 @@ func resolveDataPath(configuredPath, configDir string, create bool) (string, err
 	if dataPath == "" {
 		// The port must set this as the default, we will fall back to it if the config file doesn't specify a path.
 		dataPath = filepath.Join(cwd, "data")
-		if runtime.GOOS == "freebsd" && os.Geteuid() == 0 {
+		if os.Geteuid() == 0 {
 			dataPath = "/var/db/sylve"
 		}
 	}
@@ -217,6 +226,13 @@ func SetupDataPath() error {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
+	}
+
+	// Raft snapshots hold replicated secrets (ZFS keys, backup SSH keys) in
+	// files hashicorp creates world-readable. MkdirAll keeps the mode of an
+	// existing directory, so set it explicitly.
+	if err := os.Chmod(filepath.Join(dataPath, "raft"), 0700); err != nil {
+		return fmt.Errorf("failed to restrict raft directory: %w", err)
 	}
 
 	return nil

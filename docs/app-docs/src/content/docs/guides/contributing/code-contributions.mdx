@@ -36,15 +36,18 @@ git clone https://github.com/AlchemillaHQ/Sylve
 cd Sylve
 ```
 
-On amd64, stage the boot helper before using direct Go commands or live reload:
+On amd64, `air .`, `make build`, backend targets, and `make test` automatically
+download `CSMWrap.iso.gz` and its build manifest from Sylve's
+[`tip` release](https://github.com/AlchemillaHQ/Sylve/releases/tag/tip) when either
+is missing. Staged files are reused offline; `make csmwrap-download` refreshes them.
+The `tip` helper may differ from the checkout's pinned revision. Downloads are
+disabled when `CI` is set, and ARM64 builds do not need the helper.
+
+For direct `go build` or `go test` commands on amd64, stage the helper first:
 
 ```sh
 make csmwrap-assets
 ```
-
-`make build`, backend targets, and `make test` stage the helper automatically when
-missing. Staged inputs are reused offline; `make csmwrap-download` refreshes them.
-ARM64 builds do not need the helper.
 
 To build the checkout's pinned helper instead, follow the
 [CSMWrap source-build instructions](https://github.com/AlchemillaHQ/Sylve/blob/master/third-party/csmwrap/README.md)
@@ -79,6 +82,8 @@ Use `tmux`, `zellij`, or `screen` and split into two panes:
 ```bash
 air .
 ```
+
+On amd64, Air prepares missing CSMWrap assets before building, as described above.
 
 2. In the `web/` directory:
 
@@ -208,11 +213,12 @@ From the repository root, run:
 ```bash
 npm run format --prefix web
 npm run lint --prefix web
+npm run check --prefix web
 make frontend
 npm run build:demo --prefix web
 ```
 
-`npm run format` writes Prettier changes. `npm run lint` verifies formatting and ESLint rules. `make frontend` performs a clean dependency install, runs `svelte-check` with warnings treated as failures, builds the production frontend, and copies the generated assets into the Go embed directory. The final command verifies the separate demo build used by the project website.
+`npm run format` writes Prettier changes. `npm run lint` verifies formatting and ESLint rules. `npm run check` runs `svelte-check` with warnings treated as failures. `make frontend` performs a clean dependency install, builds the production frontend, and copies the generated assets into the Go embed directory. The final command verifies the separate demo build used by the project website.
 
 If a frontend change adds, changes, or removes user-facing text, follow the [translation contribution guide](/guides/contributing/translations/) to extract, clean, and validate the locale catalogs before submitting it.
 

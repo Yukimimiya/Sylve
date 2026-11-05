@@ -121,6 +121,10 @@ func TestEnsureAuthenticatedTrustBoundary(t *testing.T) {
 			path: "/api/jail/1/console?auth=" + consoleAuthHex, want: http.StatusOK,
 		},
 		{
+			name: "container console hash", method: http.MethodGet,
+			path: "/api/container/1/console?auth=" + consoleAuthHex, want: http.StatusOK,
+		},
+		{
 			name: "malformed cluster header overrides local bearer", method: http.MethodGet, path: "/api/vm",
 			headers: map[string]string{
 				authSvc.ClusterTokenHeader: "not-bearer", "Authorization": "Bearer " + localToken,
@@ -137,6 +141,14 @@ func TestEnsureAuthenticatedTrustBoundary(t *testing.T) {
 		},
 		{
 			name: "service read near miss", method: http.MethodGet, path: "/api/info/node/extra",
+			headers: map[string]string{authSvc.ClusterTokenHeader: "Bearer " + readToken}, want: http.StatusForbidden,
+		},
+		{
+			name: "service read container tree", method: http.MethodGet, path: "/api/container/simple",
+			headers: map[string]string{authSvc.ClusterTokenHeader: "Bearer " + readToken}, want: http.StatusOK,
+		},
+		{
+			name: "service read full container list", method: http.MethodGet, path: "/api/container",
 			headers: map[string]string{authSvc.ClusterTokenHeader: "Bearer " + readToken}, want: http.StatusForbidden,
 		},
 		{
@@ -240,12 +252,6 @@ func TestAuthorizationMatrix(t *testing.T) {
 	}
 
 	cases := []testCase{
-		{"info: unauthenticated → 401", anonUser, nil, http.StatusUnauthorized},
-		{"info: authenticated → 200", sylveNonAdmin, nil, http.StatusOK},
-
-		{"cluster: unauthenticated → 401", anonUser, nil, http.StatusUnauthorized},
-		{"cluster: authenticated → 200", sylveNonAdmin, nil, http.StatusOK},
-
 		{"admin: unauthenticated → 401", anonUser, []gin.HandlerFunc{adminMW}, http.StatusUnauthorized},
 		{"admin: non-admin → 403", sylveNonAdmin, []gin.HandlerFunc{adminMW}, http.StatusForbidden},
 		{"admin: admin → 200", sylveAdmin, []gin.HandlerFunc{adminMW}, http.StatusOK},

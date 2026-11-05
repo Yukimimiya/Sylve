@@ -39,7 +39,7 @@ func (s *Service) ProposeEncryptionKeyUpsert(uuid, keyData, keyFormat string, by
 		KeyFormat: keyFormat,
 	}
 
-	if bypassRaft || s.Raft == nil {
+	if bypassRaft || s.Raft() == nil {
 		return s.UpsertEncryptionKeyLocally(uuid, keyData, keyFormat)
 	}
 
@@ -49,29 +49,6 @@ func (s *Service) ProposeEncryptionKeyUpsert(uuid, keyData, keyFormat string, by
 	}
 
 	cmd := clusterModels.Command{Type: "encryption_key", Action: "upsert", Data: data}
-	return s.applyRaftCommand(cmd)
-}
-
-func (s *Service) ProposeEncryptionKeyDelete(uuid string, bypassRaft bool) error {
-	uuid = strings.TrimSpace(uuid)
-	if uuid == "" {
-		return nil
-	}
-
-	if bypassRaft || s.Raft == nil {
-		return s.DB.Where("uuid = ?", uuid).Delete(&clusterModels.EncryptionKey{}).Error
-	}
-
-	payload := struct {
-		UUID string `json:"uuid"`
-	}{UUID: uuid}
-
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal_delete_payload_failed: %w", err)
-	}
-
-	cmd := clusterModels.Command{Type: "encryption_key", Action: "delete", Data: data}
 	return s.applyRaftCommand(cmd)
 }
 
@@ -118,11 +95,18 @@ func (s *Service) UpsertEncryptionKeyLocally(uuid, keyData, keyFormat string) er
 }
 
 func (s *Service) ForwardEncryptionKeyToLeader(uuid, keyData, keyFormat string) error {
-	if s.Raft == nil || s.Raft.State() == raft.Leader {
+	// The periodic key scan re-sends every dataset key; skip the ones the
+	// cluster already holds unchanged instead of committing a no-op entry.
+	var existing clusterModels.EncryptionKey
+	if err := s.DB.Where("uuid = ?", strings.TrimSpace(uuid)).Limit(1).Find(&existing).Error; err == nil &&
+		existing.ID != 0 && existing.KeyData == keyData && existing.KeyFormat == keyFormat {
+		return nil
+	}
+	if s.Raft() == nil || s.Raft().State() == raft.Leader {
 		return s.ProposeEncryptionKeyUpsert(uuid, keyData, keyFormat, false)
 	}
 
-	leaderAddr, _ := s.Raft.LeaderWithID()
+	leaderAddr, _ := s.Raft().LeaderWithID()
 	if leaderAddr == "" {
 		return fmt.Errorf("leader_unknown")
 	}

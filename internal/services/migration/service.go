@@ -176,6 +176,11 @@ func (s *Service) getActiveTaskForGuest(guestType string, guestID uint) (*taskMo
 
 func (s *Service) ValidateMigration(ctx context.Context, req migrationIface.MigrateRequest) (*migrationIface.ValidateResult, error) {
 	result := &migrationIface.ValidateResult{Allowed: true}
+	if !clusterModels.ValidReplicationGuestType(req.GuestType) {
+		result.Allowed = false
+		result.Reasons = append(result.Reasons, "unsupported_guest_type")
+		return result, nil
+	}
 
 	detail := s.Cluster.Detail()
 	if detail == nil || strings.TrimSpace(detail.NodeID) == "" {
@@ -1615,7 +1620,7 @@ func (s *Service) updateTaskDB(taskID uint, updates map[string]any) {
 }
 
 func (s *Service) getNodeSSHIdentity(nodeUUID string) (*clusterModels.ClusterSSHIdentity, error) {
-	if s.Cluster != nil && s.Cluster.Raft != nil {
+	if s.Cluster != nil && s.Cluster.Raft() != nil {
 		if _, err := s.Cluster.ResolveCurrentRaftMember(nodeUUID); err != nil {
 			return nil, err
 		}

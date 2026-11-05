@@ -71,10 +71,40 @@ func (o *Observer) Close() error {
 	return o.Conn.Close()
 }
 
+// Terminal is the shell a console session runs.
+type Terminal interface {
+	io.ReadWriteCloser
+	Resize(rows, cols uint16) error
+}
+
+// ptyTerminal is a command running on a pseudo-terminal.
+type ptyTerminal struct {
+	*os.File
+	cmd *exec.Cmd
+}
+
+func startTerminal(cmd *exec.Cmd, rows, cols uint16) (Terminal, error) {
+	file, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: rows, Cols: cols})
+	if err != nil {
+		return nil, err
+	}
+	return &ptyTerminal{File: file, cmd: cmd}, nil
+}
+
+func (t *ptyTerminal) Resize(rows, cols uint16) error {
+	return pty.Setsize(t.File, &pty.Winsize{Rows: rows, Cols: cols})
+}
+
+func (t *ptyTerminal) Close() error {
+	err := t.File.Close()
+	_ = t.cmd.Process.Kill()
+	_ = t.cmd.Wait()
+	return err
+}
+
 type TerminalSession struct {
 	ID        string
-	Cmd       *exec.Cmd
-	Pty       *os.File
+	Terminal  Terminal
 	Observers map[*Observer]struct{}
 
 	Mu           sync.Mutex
@@ -103,42 +133,42 @@ var (
 type WindowSize struct {
 	Rows uint16 `json:"rows"`
 	Cols uint16 `json:"cols"`
-	X    uint16 `json:"x"`
-	Y    uint16 `json:"y"`
 }
 
 func (sm *SessionManager) GetOrCreateSession(sessionID string, ctidInt int) (*TerminalSession, error) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	return sm.GetOrCreateTerminalSession(sessionID, func(rows, cols uint16) (Terminal, error) {
+		ctidHash := utils.HashIntToNLetters(ctidInt, 5)
+		cmd := exec.Command("jexec", "-l", ctidHash, "su", "-l", "root")
+		cmd.Env = append(os.Environ(), "TERM=xterm")
+		return startTerminal(cmd, rows, cols)
+	})
+}
 
+func (sm *SessionManager) GetOrCreateTerminalSession(sessionID string, open func(rows, cols uint16) (Terminal, error)) (*TerminalSession, error) {
+	sm.mu.Lock()
 	if session, exists := sm.sessions[sessionID]; exists && !session.IsClosed() {
+		sm.mu.Unlock()
 		return session, nil
 	}
+	sm.mu.Unlock()
 
-	ctidHash := utils.HashIntToNLetters(ctidInt, 5)
-
-	cmd := exec.Command("jexec", "-l", ctidHash, "su", "-l", "root")
-	cmd.Env = append(os.Environ(), "TERM=xterm")
-
-	ptymx, err := pty.Start(cmd)
+	// Opened unlocked: a container's shell waits on podman, which can be busy
+	// with that container for as long as its stop timeout.
+	terminal, err := open(defaultRows, defaultCols)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := pty.Setsize(ptymx, &pty.Winsize{
-		Rows: defaultRows,
-		Cols: defaultCols,
-	}); err != nil {
-		_ = ptymx.Close()
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return nil, err
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if session, exists := sm.sessions[sessionID]; exists && !session.IsClosed() {
+		_ = terminal.Close()
+		return session, nil
 	}
 
 	session := &TerminalSession{
 		ID:           sessionID,
-		Cmd:          cmd,
-		Pty:          ptymx,
+		Terminal:     terminal,
 		Observers:    make(map[*Observer]struct{}),
 		History:      make([]byte, 0, wsHistoryLimit),
 		HistoryLimit: wsHistoryLimit,
@@ -185,14 +215,8 @@ func (ts *TerminalSession) Close(sm *SessionManager) {
 			_ = obs.Close()
 		}
 
-		if ts.Pty != nil {
-			_ = ts.Pty.Close()
-		}
-		if ts.Cmd != nil && ts.Cmd.Process != nil {
-			_ = ts.Cmd.Process.Kill()
-		}
-		if ts.Cmd != nil {
-			_ = ts.Cmd.Wait()
+		if ts.Terminal != nil {
+			_ = ts.Terminal.Close()
 		}
 
 		sm.removeSession(ts.ID, ts)
@@ -270,7 +294,7 @@ func (ts *TerminalSession) PumpOutput(sm *SessionManager) {
 
 	buf := make([]byte, 4096)
 	for {
-		n, err := ts.Pty.Read(buf)
+		n, err := ts.Terminal.Read(buf)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				logger.L.Error().Err(err).Str("session", ts.ID).Msg("Error reading from PTY")
@@ -381,127 +405,127 @@ func HandleJailTerminalWebsocket(jailService jailConsoleService, lifecycleServic
 			return
 		}
 
-		if !websocket.IsWebSocketUpgrade(c.Request) {
-			writeJailConsoleError(c, http.StatusBadRequest, "websocket_upgrade_required", nil)
-			return
-		}
-
-		conn, err := WSUpgrader.Upgrade(c.Writer, c.Request, nil)
-		if err != nil {
-			logger.L.Warn().Err(err).Uint("ctid", ctID).Msg("failed to upgrade jail console websocket")
-			return
-		}
-
-		conn.SetReadLimit(wsReadLimit)
-		_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
-		conn.SetPongHandler(func(string) error {
-			return conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		ServeTerminal(c, "jail-"+ctIDText, func(sm *SessionManager, sessionID string) (*TerminalSession, error) {
+			return sm.GetOrCreateSession(sessionID, int(ctID))
 		})
+	}
+}
 
-		sessionID := "jail-" + ctIDText
-		session, err := GlobalSessionManager.GetOrCreateSession(sessionID, int(ctID))
-		if err != nil {
-			logger.L.Error().Err(err).Uint("ctid", ctID).Msg("failed to start jail console session")
-			_ = conn.WriteMessage(websocket.TextMessage, []byte("Jail console unavailable"))
-			_ = conn.Close()
-			return
-		}
+func ServeTerminal(c *gin.Context, sessionID string, open func(*SessionManager, string) (*TerminalSession, error)) {
+	if !websocket.IsWebSocketUpgrade(c.Request) {
+		writeJailConsoleError(c, http.StatusBadRequest, "websocket_upgrade_required", nil)
+		return
+	}
 
-		observer := &Observer{Conn: conn}
-		if err := session.AddObserverAndReplay(observer); err != nil {
-			logger.L.Warn().Err(err).Str("session", sessionID).Msg("failed to join jail console session")
-			session.RemoveObserver(observer, GlobalSessionManager)
-			return
-		}
+	conn, err := WSUpgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		logger.L.Warn().Err(err).Str("session", sessionID).Msg("failed to upgrade console websocket")
+		return
+	}
 
-		defer session.RemoveObserver(observer, GlobalSessionManager)
+	conn.SetReadLimit(wsReadLimit)
+	_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	})
 
-		done := make(chan struct{})
-		defer close(done)
+	session, err := open(GlobalSessionManager, sessionID)
+	if err != nil {
+		logger.L.Error().Err(err).Str("session", sessionID).Msg("failed to start console session")
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("Console unavailable"))
+		_ = conn.Close()
+		return
+	}
 
-		go func() {
-			ticker := time.NewTicker(wsPingPeriod)
-			defer ticker.Stop()
+	observer := &Observer{Conn: conn}
+	if err := session.AddObserverAndReplay(observer); err != nil {
+		logger.L.Warn().Err(err).Str("session", sessionID).Msg("failed to join console session")
+		session.RemoveObserver(observer, GlobalSessionManager)
+		return
+	}
 
-			for {
-				select {
-				case <-done:
-					return
-				case <-ticker.C:
-					if err := observer.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteTimeout)); err != nil {
-						_ = observer.Close()
-						return
-					}
-				}
-			}
-		}()
+	defer session.RemoveObserver(observer, GlobalSessionManager)
+
+	done := make(chan struct{})
+	defer close(done)
+
+	go func() {
+		ticker := time.NewTicker(wsPingPeriod)
+		defer ticker.Stop()
 
 		for {
-			messageType, reader, err := conn.NextReader()
-			if err != nil {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if err := observer.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteTimeout)); err != nil {
+					_ = observer.Close()
+					return
+				}
+			}
+		}
+	}()
+
+	for {
+		messageType, reader, err := conn.NextReader()
+		if err != nil {
+			return
+		}
+
+		if messageType != websocket.BinaryMessage {
+			logger.L.Warn().
+				Int("message_type", messageType).
+				Str("session", sessionID).
+				Msg("Rejected non-binary websocket frame")
+			return
+		}
+
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			logger.L.Warn().Err(err).Str("session", sessionID).Msg("Failed to read websocket frame")
+			return
+		}
+
+		if len(data) == 0 {
+			continue
+		}
+
+		switch data[0] {
+		case controlInput:
+			if len(data) == 1 {
+				continue
+			}
+			if _, err := session.Terminal.Write(data[1:]); err != nil {
+				logger.L.Warn().Err(err).Str("session", sessionID).Msg("Failed to write terminal input to PTY")
 				return
 			}
 
-			if messageType != websocket.BinaryMessage {
-				logger.L.Warn().
-					Int("message_type", messageType).
-					Str("session", sessionID).
-					Msg("Rejected non-binary websocket frame")
-				return
-			}
-
-			data, err := io.ReadAll(reader)
-			if err != nil {
-				logger.L.Warn().Err(err).Str("session", sessionID).Msg("Failed to read websocket frame")
-				return
-			}
-
-			if len(data) == 0 {
+		case controlResize:
+			if len(data) == 1 {
 				continue
 			}
 
-			switch data[0] {
-			case controlInput:
-				if len(data) == 1 {
-					continue
-				}
-				if _, err := session.Pty.Write(data[1:]); err != nil {
-					logger.L.Warn().Err(err).Str("session", sessionID).Msg("Failed to write terminal input to PTY")
-					return
-				}
-
-			case controlResize:
-				if len(data) == 1 {
-					continue
-				}
-
-				var ws WindowSize
-				if err := json.Unmarshal(data[1:], &ws); err != nil {
-					logger.L.Warn().Err(err).Str("session", sessionID).Msg("Invalid resize payload")
-					continue
-				}
-
-				if ws.Rows == 0 || ws.Cols == 0 {
-					logger.L.Warn().Str("session", sessionID).Msg("Ignored zero-sized resize payload")
-					continue
-				}
-
-				if err := pty.Setsize(session.Pty, &pty.Winsize{
-					Rows: ws.Rows,
-					Cols: ws.Cols,
-					X:    ws.X,
-					Y:    ws.Y,
-				}); err != nil {
-					logger.L.Warn().Err(err).Str("session", sessionID).Msg("Failed to resize PTY")
-				}
-
-			default:
-				logger.L.Warn().
-					Uint8("control", data[0]).
-					Str("session", sessionID).
-					Msg("Rejected unknown websocket control byte")
-				return
+			var ws WindowSize
+			if err := json.Unmarshal(data[1:], &ws); err != nil {
+				logger.L.Warn().Err(err).Str("session", sessionID).Msg("Invalid resize payload")
+				continue
 			}
+
+			if ws.Rows == 0 || ws.Cols == 0 {
+				logger.L.Warn().Str("session", sessionID).Msg("Ignored zero-sized resize payload")
+				continue
+			}
+
+			if err := session.Terminal.Resize(ws.Rows, ws.Cols); err != nil {
+				logger.L.Warn().Err(err).Str("session", sessionID).Msg("Failed to resize terminal")
+			}
+
+		default:
+			logger.L.Warn().
+				Uint8("control", data[0]).
+				Str("session", sessionID).
+				Msg("Rejected unknown websocket control byte")
+			return
 		}
 	}
 }

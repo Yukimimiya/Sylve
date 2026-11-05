@@ -95,6 +95,10 @@ func Notes(cS *cluster.Service) gin.HandlerFunc {
 			return
 		}
 
+		for i := range notes {
+			notes[i].ContentHTML = utils.RenderMarkdown(notes[i].Content)
+		}
+
 		c.JSON(200, internal.APIResponse[[]clusterModels.ClusterNote]{
 			Status:  "success",
 			Message: "notes_listed",
@@ -122,7 +126,7 @@ func Notes(cS *cluster.Service) gin.HandlerFunc {
 // @Router /cluster/notes [post]
 func CreateNote(cS *cluster.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if cS.Raft != nil && cS.Raft.State() != raft.Leader {
+		if cS.Raft() != nil && cS.Raft().State() != raft.Leader {
 			forwardToLeader(c, cS)
 			return
 		}
@@ -133,7 +137,7 @@ func CreateNote(cS *cluster.Service) gin.HandlerFunc {
 			return
 		}
 
-		err := cS.ProposeNoteCreate(req.Title, req.Content, cS.Raft == nil)
+		err := cS.ProposeNoteCreate(req.Title, req.Content, cS.Standalone())
 		if err != nil {
 			writeNoteMutationError(c, "note_create_failed", err)
 			return
@@ -185,7 +189,7 @@ func MutateNoteInternal(cS *cluster.Service) gin.HandlerFunc {
 // @Router /cluster/notes/{id} [put]
 func UpdateNote(cS *cluster.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if cS.Raft != nil && cS.Raft.State() != raft.Leader {
+		if cS.Raft() != nil && cS.Raft().State() != raft.Leader {
 			forwardToLeader(c, cS)
 			return
 		}
@@ -207,7 +211,7 @@ func UpdateNote(cS *cluster.Service) gin.HandlerFunc {
 			return
 		}
 
-		err = cS.ProposeNoteUpdate(id, req.Title, req.Content, cS.Raft == nil)
+		err = cS.ProposeNoteUpdate(id, req.Title, req.Content, cS.Standalone())
 		if err != nil {
 			writeNoteMutationError(c, "note_update_failed", err)
 			return
@@ -251,12 +255,12 @@ func DeleteNote(cS *cluster.Service) gin.HandlerFunc {
 			return
 		}
 
-		if cS.Raft != nil && cS.Raft.State() != raft.Leader {
+		if cS.Raft() != nil && cS.Raft().State() != raft.Leader {
 			forwardToLeader(c, cS)
 			return
 		}
 
-		if err := cS.ProposeNoteDelete(id, cS.Raft == nil); err != nil {
+		if err := cS.ProposeNoteDelete(id, cS.Standalone()); err != nil {
 			writeNoteMutationError(c, "note_delete_failed", err)
 			return
 		}
@@ -289,7 +293,7 @@ func DeleteNote(cS *cluster.Service) gin.HandlerFunc {
 // @Router /cluster/notes/bulk-delete [post]
 func BulkDeleteNotes(cS *cluster.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if cS.Raft != nil && cS.Raft.State() != raft.Leader {
+		if cS.Raft() != nil && cS.Raft().State() != raft.Leader {
 			forwardToLeader(c, cS)
 			return
 		}
@@ -309,7 +313,7 @@ func BulkDeleteNotes(cS *cluster.Service) gin.HandlerFunc {
 			return
 		}
 
-		err := cS.ProposeNoteBulkDelete(req.IDs, cS.Raft == nil)
+		err := cS.ProposeNoteBulkDelete(req.IDs, cS.Standalone())
 		if err != nil {
 			writeNoteMutationError(c, "bulk_note_delete_failed", err)
 			return

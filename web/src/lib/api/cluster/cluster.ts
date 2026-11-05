@@ -72,6 +72,12 @@ export async function getLeaveStatus(): Promise<ClusterLeaveStatus | APIResponse
 	return await apiRequestResult('/cluster/leave-status', ClusterLeaveStatusSchema, 'GET');
 }
 
+export async function cancelLeave(): Promise<APIResponse> {
+	return await apiRequest('/cluster/leave/cancel', APIResponseSchema, 'POST', undefined, {
+		raw: true
+	});
+}
+
 export async function createCluster(ip: string): Promise<APIResponse> {
 	return await apiRequest(
 		'/cluster',
@@ -152,12 +158,6 @@ export async function getNodes(signal?: AbortSignal): Promise<ClusterNode[]> {
 
 export async function getNodesResult(signal?: AbortSignal): Promise<ClusterNode[] | APIResponse> {
 	return await apiRequestResult('/cluster/nodes', z.array(ClusterNodeSchema), 'GET', undefined, {
-		signal
-	});
-}
-
-export async function getClusterResources(signal?: AbortSignal): Promise<NodeResource[]> {
-	return await apiRequestData('/cluster/resources', z.array(NodeResourceSchema), 'GET', undefined, {
 		signal
 	});
 }

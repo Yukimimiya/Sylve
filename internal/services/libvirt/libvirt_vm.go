@@ -31,6 +31,7 @@ import (
 	libvirtServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/libvirt"
 	systemServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/system"
 	"github.com/alchemillahq/sylve/internal/logger"
+	networkAttachment "github.com/alchemillahq/sylve/internal/network/attachment"
 	clusterService "github.com/alchemillahq/sylve/internal/services/cluster"
 	"github.com/alchemillahq/sylve/pkg/network/bridgevlan"
 	"github.com/alchemillahq/sylve/pkg/utils"
@@ -240,8 +241,7 @@ func (s *Service) CreateVmXML(vm vmModels.VM, vmPath string) (string, error) {
 			if !network.Enable {
 				continue
 			}
-			if network.SwitchID != 0 {
-				nType := "bridge"
+			if network.SwitchID != 0 || network.SwitchType == networkAttachment.SwitchTypeSlirp {
 				emulation := network.Emulation
 
 				var mac *libvirtServiceInterfaces.MACAddress
@@ -277,12 +277,16 @@ func (s *Service) CreateVmXML(vm vmModels.VM, vmPath string) (string, error) {
 				if err := validateDesiredVMNetworkSwitchCompatibility(resolved); err != nil {
 					return "", err
 				}
-				interfaces = append(interfaces, libvirtServiceInterfaces.Interface{
-					Type:   nType,
-					MAC:    mac,
-					Source: libvirtServiceInterfaces.BridgeSource{Bridge: resolved.Bridge},
-					Model:  libvirtServiceInterfaces.Model{Type: emulation},
-				})
+				iface := libvirtServiceInterfaces.Interface{
+					Type:  "user",
+					MAC:   mac,
+					Model: libvirtServiceInterfaces.Model{Type: emulation},
+				}
+				if resolved.Type != networkAttachment.SwitchTypeSlirp {
+					iface.Type = "bridge"
+					iface.Source = &libvirtServiceInterfaces.BridgeSource{Bridge: resolved.Bridge}
+				}
+				interfaces = append(interfaces, iface)
 			}
 		}
 	}
@@ -1199,23 +1203,6 @@ func (s *Service) requireVMStorageTopologyMutable(rid uint) error {
 // and other physical changes.
 func (s *Service) RequireVMStorageTopologyMutable(rid uint) error {
 	return s.requireVMStorageTopologyMutable(rid)
-}
-
-// RequireVMStorageRecordTopologyMutable resolves an update request's storage
-// row to its guest before applying the same protection guard.
-func (s *Service) RequireVMStorageRecordTopologyMutable(storageID int) error {
-	if storageID <= 0 {
-		return fmt.Errorf("invalid_storage_id")
-	}
-	var storage vmModels.Storage
-	if err := s.DB.Select("vm_id").First(&storage, storageID).Error; err != nil {
-		return fmt.Errorf("failed_to_find_storage_record: %w", err)
-	}
-	var vm vmModels.VM
-	if err := s.DB.Select("rid").First(&vm, storage.VMID).Error; err != nil {
-		return fmt.Errorf("failed_to_find_vm_record: %w", err)
-	}
-	return s.requireVMStorageTopologyMutable(vm.RID)
 }
 
 func (s *Service) startVM(domain *libvirt.Domain, vm vmModels.VM) error {

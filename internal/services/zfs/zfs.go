@@ -40,7 +40,8 @@ type Service struct {
 	cacheInvalidationSequence uint64
 	pendingCacheInvalidations map[string]uint64
 	OnDatasetsDeleted         func(context.Context, []string) error
-	StorageTopologyGuard      func(context.Context) (func(), error)
+	StorageTopologyGuard      func(context.Context, ...string) (func(), error)
+	ReleasePool               func(pool string)
 	listHostPools             func(context.Context) ([]*gzfs.ZPool, error)
 	scrubDriver               poolScrubBackend
 	scrubJobsReady            atomic.Bool
@@ -100,19 +101,6 @@ func (s *Service) notifyDatasetsDeleted(ctx context.Context, guids []string) err
 		return fmt.Errorf("datasets_deleted_but_dependent_services_failed_to_reconcile: %w", err)
 	}
 	return nil
-}
-
-func (s *Service) PoolFromDataset(ctx context.Context, name string) (string, error) {
-	if name == "" {
-		return "", fmt.Errorf("dataset_name_cannot_be_empty")
-	}
-
-	dataset, err := s.GZFS.ZFS.Get(ctx, name, false)
-	if err != nil {
-		return "", fmt.Errorf("error_getting_dataset_%s: %w", name, err)
-	}
-
-	return dataset.Pool, nil
 }
 
 func (s *Service) GetUsablePools(ctx context.Context) ([]*gzfs.ZPool, error) {

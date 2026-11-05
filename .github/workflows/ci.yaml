@@ -85,9 +85,7 @@ jobs:
               });
               const testJobs = jobs.filter((job) => job.name === "Test" || job.name.startsWith("Test ("));
               if (testJobs.length && testJobs.every((job) => job.conclusion === "skipped") && run.conclusion === "success") continue;
-              const names = testJobs.some((job) => job.name === "Test")
-                ? ["Test"]
-                : ["Test (Unit)", "Test (Integration)", "Test (Acceptance)"];
+              const names = ["Test (Unit)", "Test (Integration)", "Test (Acceptance)"];
               const results = names.map((name) => testJobs.find((job) => job.name === name)?.conclusion);
               const required = results.some((result) => result !== "success");
               core.info(`Previous Test results: ${results.map((result) => result || "not completed").join(", ")}; running Test: ${required}.`);
@@ -110,7 +108,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version-file: go.mod
           cache: false
 
       - name: Setup Node
@@ -123,11 +121,22 @@ jobs:
       - name: Run quality checks
         run: make quality
 
+      # Tip publishes this build for the website; release builds its own.
+      - name: Build demo web assets
+        run: npm run build:demo --prefix web
+
+      - name: Upload demo web assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-demo-assets
+          path: web/build/
+          retention-days: 1
+
+  # Tests and builds don't wait for quality; CI Success still requires it.
   test:
-    name: Test (${{ matrix.label }})
+    name: Test
     needs:
       - changes
-      - quality
       - build-csmwrap
     if: needs.changes.outputs.test == 'true'
     runs-on: ubuntu-latest
@@ -135,21 +144,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - lane: unit
-            label: Unit
-            target: test
-          - lane: integration
-            label: Integration
-            target: test-integration
-          - lane: acceptance
-            label: Acceptance
-            target: test-acceptance-all
+        lane: [Unit, Integration, Acceptance]
     env:
       GOCACHE: ${{ github.workspace }}/.cache/freebsd-go/build
       GOMODCACHE: ${{ github.workspace }}/.cache/freebsd-go/mod
-      TEST_LANE: ${{ matrix.lane }}
-      TEST_TARGET: ${{ matrix.target }}
+      # GitHub names each job after its matrix value; the steps use lowercase lanes.
+      TEST_LANE: ${{ fromJSON('{"Unit":"unit","Integration":"integration","Acceptance":"acceptance"}')[matrix.lane] }}
+      TEST_TARGET: ${{ fromJSON('{"Unit":"test","Integration":"test-integration","Acceptance":"test-acceptance-all"}')[matrix.lane] }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -164,21 +165,22 @@ jobs:
       - name: Verify and stage CSMWrap embeds before FreeBSD checks
         run: ./scripts/build-csmwrap.sh --verify --stage
 
-      - name: Cache FreeBSD Go files
+      # One cache for all lanes, saved by the unit lane since it compiles every package.
+      - name: Restore FreeBSD Go files
         id: freebsd_go_cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: |
             .cache/freebsd-go/build
             .cache/freebsd-go/mod
-          key: freebsd-15-go-${{ matrix.lane }}-${{ hashFiles('go.mod', 'go.sum') }}-${{ github.sha }}
+          key: freebsd-15-go-${{ hashFiles('go.mod', 'go.sum') }}-${{ github.sha }}
           restore-keys: |
-            freebsd-15-go-${{ matrix.lane }}-${{ hashFiles('go.mod', 'go.sum') }}-
-            freebsd-15-go-${{ hashFiles('go.mod', 'go.sum') }}
+            freebsd-15-go-${{ hashFiles('go.mod', 'go.sum') }}-
+            freebsd-15-go-
 
       - name: Run FreeBSD test suite
         env:
-          GO_CACHE_RESTORED: ${{ steps.freebsd_go_cache.outputs.cache-hit != '' }}
+          GO_CACHE_RESTORED: ${{ steps.freebsd_go_cache.outputs.cache-matched-key != '' }}
         uses: vmactions/freebsd-vm@83b151f58c6047089f4c80eb5ba2039d158ce093 # v1.5.3
         with:
           release: "15"
@@ -188,7 +190,7 @@ jobs:
           envs: CI GOCACHE GOMODCACHE GO_CACHE_RESTORED TEST_LANE TEST_TARGET
           prepare: |
             pkg update
-            pkg install -y go git libvirt bhyve-firmware qemu-tools jq
+            pkg install -y go git libvirt bhyve-firmware qemu-tools jq podman cni-dnsname
             sed -i '' 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
             sysrc sshd_enable=YES
             mkdir -p /root/.ssh && chmod 700 /root/.ssh
@@ -200,6 +202,9 @@ jobs:
           run: |
             setup_started="$(date +%s)"
             mkdir -p test-results
+            # Test with the toolchain release builds use, not whatever pkg ships.
+            GOTOOLCHAIN="$(awk '$1 == "toolchain" { print $2 }' go.mod)"
+            export GOTOOLCHAIN
             set +e
             (
               set -e
@@ -214,6 +219,21 @@ jobs:
                   kldstat -q -m "$module" || kldload "$module"
                 done
                 kldstat -q -m nvmf/tcp || kldload nvmf_tcp
+
+                if [ "$TEST_LANE" = acceptance ]; then
+                  # Some runner hosts don't pass virtualization through; CI Retry re-runs those.
+                  bhyvectl --vm=ci-nested-probe --create && bhyvectl --vm=ci-nested-probe --destroy || {
+                    echo "nested virtualization unavailable on this runner" > test-results/setup.reason
+                    exit 1
+                  }
+                fi
+
+                egress="$(route -n get default | awk '/interface:/ { print $2 }')"
+                printf 'table <cni-nat> persist\nnat on %s inet from <cni-nat> to any -> (%s)\nnat-anchor "cni-rdr/*"\nrdr-anchor "cni-rdr/*"\n' \
+                  "$egress" "$egress" | pfctl -f -
+                sysctl net.pf.filter_local=1
+                pfctl -d 2>/dev/null || true
+                pfctl -e
 
                 [ -c /dev/cam/ctl ] && [ -c /dev/iscsi ] && [ -c /dev/nvmf ] || {
                   echo "CTL, iSCSI, and NVMe/TCP kernel devices are required for integration tests"
@@ -281,10 +301,22 @@ jobs:
             echo "FreeBSD host setup did not produce a result"
             exit 1
           fi
+          if [ -f test-results/setup.reason ]; then
+            echo "::error::$(cat test-results/setup.reason)"
+          fi
           exit "$(cat test-results/setup.rc)"
 
+      - name: Save FreeBSD Go files
+        if: always() && env.TEST_LANE == 'unit' && steps.setup_result.outcome == 'success' && steps.freebsd_go_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            .cache/freebsd-go/build
+            .cache/freebsd-go/mod
+          key: ${{ steps.freebsd_go_cache.outputs.cache-primary-key }}
+
       - name: Upload vet report
-        if: always() && matrix.lane == 'unit' && steps.setup_result.outcome == 'success'
+        if: always() && env.TEST_LANE == 'unit' && steps.setup_result.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: vet-report
@@ -296,7 +328,7 @@ jobs:
 
       - name: Check vet result
         id: vet_result
-        if: always() && matrix.lane == 'unit' && steps.setup_result.outcome == 'success'
+        if: always() && env.TEST_LANE == 'unit' && steps.setup_result.outcome == 'success'
         run: |
           if [ ! -f test-results/vet.rc ]; then
             echo "Vet result was not produced"
@@ -305,27 +337,27 @@ jobs:
           exit "$(cat test-results/vet.rc)"
 
       - name: Publish test summary
-        if: always() && steps.setup_result.outcome == 'success' && (matrix.lane != 'unit' || steps.vet_result.outcome == 'success')
+        if: always() && steps.setup_result.outcome == 'success' && (env.TEST_LANE != 'unit' || steps.vet_result.outcome == 'success')
         run: |
           if [ -f "test-results/$TEST_LANE-summary.md" ]; then
             cat "test-results/$TEST_LANE-summary.md" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload test report
-        if: always() && steps.setup_result.outcome == 'success' && (matrix.lane != 'unit' || steps.vet_result.outcome == 'success')
+        if: always() && steps.setup_result.outcome == 'success' && (env.TEST_LANE != 'unit' || steps.vet_result.outcome == 'success')
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.lane }}-test-report
+          name: ${{ env.TEST_LANE }}-test-report
           path: |
-            test-results/${{ matrix.lane }}.json
-            test-results/${{ matrix.lane }}.log
-            test-results/${{ matrix.lane }}-summary.md
-            test-results/${{ matrix.lane }}.rc
+            test-results/${{ env.TEST_LANE }}.json
+            test-results/${{ env.TEST_LANE }}.log
+            test-results/${{ env.TEST_LANE }}-summary.md
+            test-results/${{ env.TEST_LANE }}.rc
           if-no-files-found: warn
           retention-days: 7
 
       - name: Check test result
-        if: always() && steps.setup_result.outcome == 'success' && (matrix.lane != 'unit' || steps.vet_result.outcome == 'success')
+        if: always() && steps.setup_result.outcome == 'success' && (env.TEST_LANE != 'unit' || steps.vet_result.outcome == 'success')
         run: |
           if [ ! -f "test-results/$TEST_LANE.rc" ]; then
             echo "$TEST_LANE test result was not produced"
@@ -347,11 +379,17 @@ jobs:
 
   build-web:
     name: Build Web
-    needs: quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      # Tip metadata requires both architectures to embed the same build time.
+      built_at: ${{ steps.built_at.outputs.value }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Stamp build time
+        id: built_at
+        run: echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -360,11 +398,8 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Check and Build Web Assets
+      - name: Build Web Assets
         run: make frontend
-
-      - name: Build Demo Web Assets
-        run: npm run build:demo --prefix web
 
       - name: Upload Web Assets
         uses: actions/upload-artifact@v7
@@ -374,18 +409,18 @@ jobs:
           retention-days: 1
 
   build-freebsd:
-    name: Build FreeBSD (${{ matrix.arch }})
+    name: Build Daemon
     needs: [build-web, build-csmwrap]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       FREEBSD_VERSION: "15"
+      # GitHub names each job after its matrix value; the steps use Go's lowercase arch.
+      ARCH: ${{ matrix.arch == 'AMD64' && 'amd64' || 'arm64' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: amd64
-          - arch: arm64
+        arch: [AMD64, ARM64]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -394,7 +429,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version-file: go.mod
 
       - name: Install cross-build toolchain
         run: |
@@ -409,31 +444,30 @@ jobs:
 
       - name: Resolve FreeBSD release
         id: freebsd
-        env:
-          ARCH: ${{ matrix.arch }}
         run: echo "version=$(./scripts/resolve-freebsd-release.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Download source-built CSMWrap
-        if: matrix.arch == 'amd64'
+        if: env.ARCH == 'amd64'
         uses: actions/download-artifact@v8
         with:
           name: csmwrap-assets
           path: .cache/csmwrap
 
       - name: Verify and stage CSMWrap embeds
-        if: matrix.arch == 'amd64'
+        if: env.ARCH == 'amd64'
         run: ./scripts/build-csmwrap.sh --verify --stage
 
       - name: Cache FreeBSD sysroot
         uses: actions/cache@v6
         with:
-          path: .cache/freebsd/${{ matrix.arch }}-${{ steps.freebsd.outputs.version }}
-          key: freebsd-sysroot-v2-${{ runner.os }}-${{ matrix.arch }}-${{ steps.freebsd.outputs.version }}-${{ hashFiles('scripts/setup-freebsd-sysroot.sh', 'scripts/resolve-freebsd-release.sh') }}
+          path: .cache/freebsd/${{ env.ARCH }}-${{ steps.freebsd.outputs.version }}
+          key: freebsd-sysroot-v2-${{ runner.os }}-${{ env.ARCH }}-${{ steps.freebsd.outputs.version }}-${{ hashFiles('scripts/setup-freebsd-sysroot.sh', 'scripts/resolve-freebsd-release.sh') }}
 
       - name: Build FreeBSD binary on Linux (${{ matrix.arch }})
         env:
           FREEBSD_VERSION: ${{ steps.freebsd.outputs.version }}
-        run: make cross-build-${{ matrix.arch }}
+          BUILD_TIMESTAMP: ${{ needs.build-web.outputs.built_at }}
+        run: make "cross-build-$ARCH" GIT_COMMIT="$GITHUB_SHA" BUILD_TIMESTAMP="$BUILD_TIMESTAMP"
 
       - name: Verify binary format
         run: |
@@ -441,18 +475,45 @@ jobs:
           file bin/sylve | tee /tmp/sylve-file.txt
           grep -q "FreeBSD" /tmp/sylve-file.txt
 
-          if [ "${{ matrix.arch }}" = "amd64" ]; then
+          if [ "$ARCH" = amd64 ]; then
             grep -Eq "x86-64|amd64" /tmp/sylve-file.txt
           else
             grep -Eq "aarch64|arm64|ARM aarch64" /tmp/sylve-file.txt
           fi
 
-      - name: Upload Binary
+      - name: Record binary build metadata
+        env:
+          FREEBSD_RELEASE: ${{ steps.freebsd.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p build-assets
+          cp bin/sylve "build-assets/sylve-${ARCH}"
+          go run ./cmd/tipmetadata record \
+            -binary "build-assets/sylve-${ARCH}" -arch "${ARCH}" \
+            -freebsd "${FREEBSD_RELEASE}" -commit "${GITHUB_SHA}"
+
+      - name: Upload binary and build metadata
         uses: actions/upload-artifact@v7
         with:
-          name: sylve-${{ matrix.arch }}
-          path: bin/sylve
+          name: build-${{ env.ARCH }}
+          path: build-assets/
+          if-no-files-found: error
           retention-days: 7
+
+  # Built here so they overlap the tests. Tip only publishes after the whole run
+  # succeeds, so CI Success doesn't wait for them.
+  build-installer:
+    name: Build Installer
+    needs: build-freebsd
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/installer-image.yaml
+    with:
+      source_sha: ${{ github.sha }}
+      release_tag: tip
+      binary_artifact: build-amd64
 
   ci-success:
     name: CI Success

@@ -6,11 +6,12 @@ release binaries are used.
 
 ## Local builds: prebuilt helper
 
-On amd64, build and test targets reuse the embed inputs under
+On amd64, build and test targets and `air` reuse the embed inputs under
 `internal/assets/csmwrap/` when present. Otherwise, `scripts/download-csmwrap.sh`
 downloads `CSMWrap.iso.gz` and `CSMWrap-build-manifest.json` from Sylve's `tip`
 release using FreeBSD's `fetch` or `curl`. No jq, submodules, or ISO packaging tools
-are required. ARM64 builds do not need the helper.
+are required. ARM64 builds do not need the helper. For direct `go build` or
+`go test` invocations, run `make csmwrap-assets` first on amd64.
 
 Refresh explicitly with:
 
@@ -37,6 +38,8 @@ make csmwrap
 After checkout, builds are offline and leave the submodules unchanged. Only
 tracked source files are copied into a temporary build tree; SeaBIOS `.version`
 metadata is generated there. Git metadata and existing build outputs are excluded.
+The headless VGA-ROM guard in `patches/` is applied only to that temporary tree
+and included in the build-cache key.
 Source-build orchestration, bundle verification, and staging use shell and `jq`.
 Python 3 is needed only by upstream SeaBIOS, not for verification or staging.
 GitHub source archives do not include submodules.

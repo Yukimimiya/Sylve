@@ -109,7 +109,7 @@ func TestPrepareLocalLeaveRejectsInFlightGuestIdentity(t *testing.T) {
 	}
 	service := &Service{
 		DB: db, NodeID: "node-1", mutationGate: newOpenTestMutationGate(t),
-		guestIdentityLocalReservations: map[uint]string{100: "in-flight"},
+		guestIdentityLocalReservations: map[uint]localGuestIdentityReservation{100: {token: "in-flight", kind: clusterModels.ReplicationGuestTypeVM}},
 	}
 	_, err := service.prepareLocalLeaveWithGuests(context.Background(), uuid.NewString(), "", true, true, true)
 	var leaveErr *ClusterLeaveError
@@ -686,5 +686,61 @@ func TestFinalizeLocalDeclusterIsIdempotent(t *testing.T) {
 	}
 	if _, _, err := service.EnterMutation(context.Background()); !errors.Is(err, ErrNodeLeaveFenced) {
 		t.Fatalf("cleanup reopened gate: %v", err)
+	}
+}
+
+// A leave stuck because the leader is gone must be cancellable; one the leader
+// already confirmed must not be, since only local cleanup is left.
+func TestCancelLocalLeave(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		phase      string
+		membership func() (MembershipStatus, error)
+		cancelled  bool
+	}{
+		{"leader unreachable", LeavePhaseRemoving, func() (MembershipStatus, error) {
+			return MembershipStatus{}, errors.New("leader_unreachable")
+		}, true},
+		{"leader confirms member", LeavePhaseRemoving, func() (MembershipStatus, error) {
+			return MembershipStatus{Present: true}, nil
+		}, true},
+		{"leader confirms removal", LeavePhaseRemoving, func() (MembershipStatus, error) {
+			return MembershipStatus{Present: false}, nil
+		}, false},
+		{"cleanup pending", LeavePhaseCleaning, nil, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			database := newClusterServiceTestDB(t, &clusterModels.Cluster{})
+			if err := database.Create(&clusterModels.Cluster{
+				Enabled: true, RaftIP: "192.0.2.10", LeaveID: "leave-1", LeavePhase: test.phase,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			gate := NewMutationGate()
+			gate.Close()
+			service := &Service{DB: database, NodeID: "node-1", mutationGate: gate}
+			service.leaveMembershipForNode = func(context.Context, clusterModels.Cluster, string) (MembershipStatus, error) {
+				return test.membership()
+			}
+
+			err := service.CancelLocalLeave(context.Background())
+			if test.cancelled != (err == nil) {
+				t.Fatalf("cancel error = %v, want cancelled=%v", err, test.cancelled)
+			}
+			var record clusterModels.Cluster
+			if err := database.First(&record).Error; err != nil {
+				t.Fatal(err)
+			}
+			_, release, admitErr := service.EnterMutation(context.Background())
+			if admitErr == nil {
+				release()
+			}
+			if test.cancelled && (record.LeavePhase != "" || admitErr != nil) {
+				t.Fatalf("phase=%q admit=%v after cancel", record.LeavePhase, admitErr)
+			}
+			if !test.cancelled && (record.LeavePhase != test.phase || admitErr == nil) {
+				t.Fatalf("phase=%q admit=%v after refused cancel", record.LeavePhase, admitErr)
+			}
+		})
 	}
 }

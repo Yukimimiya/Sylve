@@ -13,13 +13,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/alchemillahq/sylve/internal"
 	clusterModels "github.com/alchemillahq/sylve/internal/db/models/cluster"
 	clusterServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/cluster"
+	"github.com/alchemillahq/sylve/internal/logger"
 	"github.com/alchemillahq/sylve/pkg/utils"
 	"github.com/google/uuid"
 	"github.com/hashicorp/raft"
@@ -35,6 +38,11 @@ const (
 
 	guestIdentityControlMaxResponseBytes = int64(1 << 20)
 )
+
+type localGuestIdentityReservation struct {
+	token string
+	kind  string
+}
 
 type GuestIdentityControlRequest struct {
 	Operation           string                                            `json:"operation"`
@@ -185,18 +193,25 @@ func (s *Service) applyGuestIdentityRaftAction(action string, payload any) error
 }
 
 func (s *Service) authoritativeGuestIdentityClaims() ([]clusterModels.GuestIdentityClaim, error) {
-	if s == nil || s.Raft == nil {
+	if s == nil || s.Raft() == nil {
 		return nil, fmt.Errorf("cluster_consensus_unavailable: raft_not_initialized")
 	}
-	if s.Raft.State() != raft.Leader {
+	if s.Raft().State() != raft.Leader {
 		return nil, raft.ErrNotLeader
 	}
-	if err := s.Raft.VerifyLeader().Error(); err != nil {
+	if err := s.Raft().VerifyLeader().Error(); err != nil {
 		return nil, fmt.Errorf("cluster_consensus_unavailable: verify_leader: %w", err)
 	}
-	if err := s.Raft.Barrier(raftApplyTimeout).Error(); err != nil {
+	if err := s.Raft().Barrier(raftApplyTimeout).Error(); err != nil {
 		return nil, fmt.Errorf("cluster_consensus_unavailable: barrier_failed: %w", err)
 	}
+	return s.replicatedGuestIdentityClaims()
+}
+
+// replicatedGuestIdentityClaims reads this node's copy of the claims. On a
+// follower it may trail the leader slightly, which is fine for pre-checks:
+// reserving an ID is still decided by the leader's FSM.
+func (s *Service) replicatedGuestIdentityClaims() ([]clusterModels.GuestIdentityClaim, error) {
 	s.replicatedStateMu.RLock()
 	defer s.replicatedStateMu.RUnlock()
 	var registry clusterModels.GuestIdentityRegistry
@@ -240,10 +255,10 @@ func (s *Service) HandleGuestIdentityControl(
 	request GuestIdentityControlRequest,
 ) (GuestIdentityControlResponse, error) {
 	var response GuestIdentityControlResponse
-	if s == nil || s.Raft == nil {
+	if s == nil || s.Raft() == nil {
 		return response, fmt.Errorf("cluster_consensus_unavailable: raft_not_initialized")
 	}
-	if s.Raft.State() != raft.Leader {
+	if s.Raft().State() != raft.Leader {
 		return response, raft.ErrNotLeader
 	}
 	issuerNodeID = strings.TrimSpace(issuerNodeID)
@@ -257,11 +272,6 @@ func (s *Service) HandleGuestIdentityControl(
 	operation := strings.ToLower(strings.TrimSpace(request.Operation))
 	switch operation {
 	case guestIdentityControlReserve, guestIdentityControlRelease:
-		s.clusterJoinMu.Lock()
-		defer s.clusterJoinMu.Unlock()
-		if err := s.RequireCurrentRaftVoter(issuerNodeID); err != nil {
-			return response, fmt.Errorf("guest_identity_issuer_not_voter: %w", err)
-		}
 		reservation, err := normalizeGuestIdentityReservation(request.Reservation)
 		if err != nil {
 			return response, err
@@ -272,6 +282,10 @@ func (s *Service) HandleGuestIdentityControl(
 		action := "reserve_ids"
 		if operation == guestIdentityControlRelease {
 			action = "release_ids"
+		}
+		// A caller that already gave up won't track this claim; don't apply it.
+		if err := ctx.Err(); err != nil {
+			return response, err
 		}
 		if err := s.applyGuestIdentityRaftAction(action, guestIdentityClaimSet(reservation)); err != nil {
 			return response, err
@@ -437,15 +451,15 @@ func (s *Service) dispatchGuestIdentityControl(
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	if s == nil || s.Raft == nil || s.Raft.State() == raft.Shutdown {
+	if s == nil || s.Raft() == nil || s.Raft().State() == raft.Shutdown {
 		return result, fmt.Errorf("cluster_consensus_unavailable: raft_not_initialized")
 	}
 	localNodeID := strings.TrimSpace(s.localGuestIdentityOwner())
-	if s.Raft.State() == raft.Leader {
+	if s.Raft().State() == raft.Leader {
 		response, err := s.HandleGuestIdentityControl(ctx, localNodeID, request)
 		return response, normalizeGuestIdentityConsensusError(err)
 	}
-	_, leaderID := s.Raft.LeaderWithID()
+	_, leaderID := s.Raft().LeaderWithID()
 	if strings.TrimSpace(string(leaderID)) == "" {
 		return result, fmt.Errorf("cluster_consensus_unavailable: leader_not_available")
 	}
@@ -565,12 +579,6 @@ func (s *Service) ReclaimGuestIdentity(
 	return err
 }
 
-func (s *Service) trackClusterGuestIdentityOperation(
-	reservation clusterServiceInterfaces.GuestIdentityReservation,
-) error {
-	return s.beginGuestIdentityOperation(reservation, clusterModels.ErrGuestIdentityAlreadyInUse)
-}
-
 func (s *Service) beginGuestIdentityOperation(
 	reservation clusterServiceInterfaces.GuestIdentityReservation,
 	conflict error,
@@ -585,15 +593,16 @@ func (s *Service) beginGuestIdentityOperation(
 		return ErrNodeLeaveFenced
 	}
 	if s.guestIdentityLocalReservations == nil {
-		s.guestIdentityLocalReservations = make(map[uint]string)
+		s.guestIdentityLocalReservations = make(map[uint]localGuestIdentityReservation)
 	}
 	for _, entry := range reservation.Entries {
-		if _, exists := s.guestIdentityLocalReservations[entry.GuestID]; exists {
+		expected := localGuestIdentityReservation{token: token, kind: entry.GuestKind}
+		if existing, exists := s.guestIdentityLocalReservations[entry.GuestID]; exists && existing != expected {
 			return fmt.Errorf("%w: guest_id=%d local_mutation_in_progress", conflict, entry.GuestID)
 		}
 	}
 	for _, entry := range reservation.Entries {
-		s.guestIdentityLocalReservations[entry.GuestID] = token
+		s.guestIdentityLocalReservations[entry.GuestID] = localGuestIdentityReservation{token: token, kind: entry.GuestKind}
 	}
 	return nil
 }
@@ -608,7 +617,8 @@ func (s *Service) clearGuestIdentityOperation(
 	s.guestIdentityRuntimeMu.Lock()
 	defer s.guestIdentityRuntimeMu.Unlock()
 	for _, entry := range reservation.Entries {
-		if s.guestIdentityLocalReservations[entry.GuestID] == token {
+		expected := localGuestIdentityReservation{token: token, kind: entry.GuestKind}
+		if s.guestIdentityLocalReservations[entry.GuestID] == expected {
 			delete(s.guestIdentityLocalReservations, entry.GuestID)
 		}
 	}
@@ -624,7 +634,8 @@ func (s *Service) requireGuestIdentityOperationOwned(
 	s.guestIdentityRuntimeMu.Lock()
 	defer s.guestIdentityRuntimeMu.Unlock()
 	for _, entry := range reservation.Entries {
-		if s.guestIdentityLocalReservations[entry.GuestID] != token {
+		expected := localGuestIdentityReservation{token: token, kind: entry.GuestKind}
+		if s.guestIdentityLocalReservations[entry.GuestID] != expected {
 			return fmt.Errorf(
 				"%w: guest_id=%d local_mutation_not_owned",
 				clusterModels.ErrGuestIdentityClaimConflict,
@@ -636,6 +647,9 @@ func (s *Service) requireGuestIdentityOperationOwned(
 }
 
 func (s *Service) requireStandaloneGuestIdentityMutationAllowedLocked(ctx context.Context) error {
+	if s.mutationGate != nil && s.mutationGate.IsFenced() {
+		return ErrNodeLeaveFenced
+	}
 	if s.guestIdentityClusterFormation {
 		return fmt.Errorf("guest_identity_cluster_formation_in_progress")
 	}
@@ -663,14 +677,13 @@ func (s *Service) reserveStandaloneGuestIdentities(
 		return err
 	}
 	if s.guestIdentityLocalReservations == nil {
-		s.guestIdentityLocalReservations = make(map[uint]string)
+		s.guestIdentityLocalReservations = make(map[uint]localGuestIdentityReservation)
 	}
+	// A leftover duplicate elsewhere in the inventory must not block unrelated
+	// IDs; a requested ID that's part of one is occupied and refused below.
 	report, err := ScanLocalGuestIdentityInventory(s.DB.WithContext(ctx), reservation.OwnerNodeID)
 	if err != nil {
 		return fmt.Errorf("guest_identity_inventory_scan_failed: %w", err)
-	}
-	if err := requireCleanGuestIdentityInventory(report); err != nil {
-		return err
 	}
 	occupied := make(map[uint]GuestIdentityInventoryEntry, len(report.Entries))
 	for _, entry := range report.Entries {
@@ -686,12 +699,13 @@ func (s *Service) reserveStandaloneGuestIdentities(
 				existing.GuestType,
 			)
 		}
-		if _, exists := s.guestIdentityLocalReservations[entry.GuestID]; exists {
+		expected := localGuestIdentityReservation{token: token, kind: entry.GuestKind}
+		if existing, exists := s.guestIdentityLocalReservations[entry.GuestID]; exists && existing != expected {
 			return fmt.Errorf("%w: guest_id=%d", clusterModels.ErrGuestIdentityAlreadyInUse, entry.GuestID)
 		}
 	}
 	for _, entry := range reservation.Entries {
-		s.guestIdentityLocalReservations[entry.GuestID] = token
+		s.guestIdentityLocalReservations[entry.GuestID] = localGuestIdentityReservation{token: token, kind: entry.GuestKind}
 	}
 	return nil
 }
@@ -704,7 +718,8 @@ func (s *Service) finalizeStandaloneGuestIdentities(
 	s.guestIdentityRuntimeMu.Lock()
 	defer s.guestIdentityRuntimeMu.Unlock()
 	for _, entry := range reservation.Entries {
-		if s.guestIdentityLocalReservations[entry.GuestID] != token {
+		expected := localGuestIdentityReservation{token: token, kind: entry.GuestKind}
+		if s.guestIdentityLocalReservations[entry.GuestID] != expected {
 			return fmt.Errorf("%w: guest_id=%d", clusterModels.ErrGuestIdentityClaimConflict, entry.GuestID)
 		}
 	}
@@ -712,8 +727,12 @@ func (s *Service) finalizeStandaloneGuestIdentities(
 	if err != nil {
 		return fmt.Errorf("guest_identity_inventory_scan_failed: %w", err)
 	}
-	if err := requireCleanGuestIdentityInventory(report); err != nil {
-		return err
+	for _, conflict := range report.Conflicts {
+		for _, entry := range reservation.Entries {
+			if conflict.GuestID == entry.GuestID {
+				return &GuestIdentityInventoryConflictError{Report: report}
+			}
+		}
 	}
 	registered := make(map[uint]string, len(report.Entries))
 	for _, entry := range report.Entries {
@@ -744,15 +763,13 @@ func (s *Service) releaseStandaloneGuestIdentities(
 	s.guestIdentityRuntimeMu.Lock()
 	defer s.guestIdentityRuntimeMu.Unlock()
 	for _, entry := range reservation.Entries {
-		existingToken, exists := s.guestIdentityLocalReservations[entry.GuestID]
-		if exists && existingToken != token {
+		expected := localGuestIdentityReservation{token: token, kind: entry.GuestKind}
+		if existing, exists := s.guestIdentityLocalReservations[entry.GuestID]; exists && existing != expected {
 			return fmt.Errorf("%w: guest_id=%d", clusterModels.ErrGuestIdentityClaimConflict, entry.GuestID)
 		}
 	}
 	for _, entry := range reservation.Entries {
-		if s.guestIdentityLocalReservations[entry.GuestID] == token {
-			delete(s.guestIdentityLocalReservations, entry.GuestID)
-		}
+		delete(s.guestIdentityLocalReservations, entry.GuestID)
 	}
 	return nil
 }
@@ -801,15 +818,36 @@ func (s *Service) PrepareGuestIdentityReservation(
 }
 
 func (s *Service) AcquireGuestIdentityReservation(ctx context.Context, reservation clusterServiceInterfaces.GuestIdentityReservation) error {
-	guestIDs := make([]uint, 0, len(reservation.Entries))
-	for _, entry := range reservation.Entries {
-		guestIDs = append(guestIDs, entry.GuestID)
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if err := s.requireJailCreationIdentityAvailable(ctx, guestIDs, reservation.Token); err != nil {
+	var err error
+	reservation, err = normalizeGuestIdentityReservation(reservation)
+	if err != nil {
 		return err
 	}
+	clustered, err := s.guestIdentityClustered(ctx)
+	if err != nil {
+		return err
+	}
+	if reservation.Clustered != clustered || reservation.OwnerNodeID != s.localGuestIdentityOwner() {
+		return fmt.Errorf("guest_identity_claim_conflict: creation_owner_changed")
+	}
+	token := guestIdentityLocalOperationToken(reservation)
+	if token == "" {
+		return fmt.Errorf("%w: local_operation_token_required", clusterModels.ErrGuestIdentityAlreadyInUse)
+	}
+	guestIDs := make(map[string][]uint)
+	for _, entry := range reservation.Entries {
+		guestIDs[entry.GuestKind] = append(guestIDs[entry.GuestKind], entry.GuestID)
+	}
+	for _, kind := range slices.Sorted(maps.Keys(guestIDs)) {
+		if err := s.requireGuestCreationIdentityAvailable(ctx, guestIDs[kind], kind, token); err != nil {
+			return err
+		}
+	}
 	if reservation.Clustered {
-		if err := s.trackClusterGuestIdentityOperation(reservation); err != nil {
+		if err := s.beginGuestIdentityOperation(reservation, clusterModels.ErrGuestIdentityAlreadyInUse); err != nil {
 			return err
 		}
 		_, err := s.dispatchGuestIdentityControl(ctx, GuestIdentityControlRequest{
@@ -817,6 +855,18 @@ func (s *Service) AcquireGuestIdentityReservation(ctx context.Context, reservati
 			Reservation: reservation,
 		})
 		if err != nil {
+			// The reserve may still have committed (timeout, leadership lost
+			// after commit), and nothing else tracks its token. Release only
+			// matches this owner and token and skips IDs that were never
+			// claimed, so this can't free anyone else's claim.
+			releaseCtx, cancel := context.WithTimeout(context.Background(), raftApplyTimeout)
+			if _, releaseErr := s.dispatchGuestIdentityControl(releaseCtx, GuestIdentityControlRequest{
+				Operation:   guestIdentityControlRelease,
+				Reservation: reservation,
+			}); releaseErr != nil {
+				logger.L.Warn().Err(releaseErr).Msg("guest_identity_failed_reserve_release_failed")
+			}
+			cancel()
 			s.clearGuestIdentityOperation(reservation)
 			return err
 		}
@@ -875,9 +925,8 @@ func (s *Service) requireNoLocalCanonicalGuestIdentitiesForRelease(
 	if err != nil {
 		return fmt.Errorf("guest_identity_inventory_scan_failed: %w", err)
 	}
-	if err := requireCleanGuestIdentityInventory(report); err != nil {
-		return err
-	}
+	// An ID stays claimed while any local guest still uses it, whatever its
+	// kind; conflicts on other IDs don't matter here.
 	requested := make(map[uint]struct{}, len(reservation.Entries))
 	for _, entry := range reservation.Entries {
 		requested[entry.GuestID] = struct{}{}
@@ -999,22 +1048,21 @@ func (s *Service) GuestIdentityClaim(
 		return reservation, err
 	}
 	if s.guestIdentityLocalReservations == nil {
-		s.guestIdentityLocalReservations = make(map[uint]string)
+		s.guestIdentityLocalReservations = make(map[uint]localGuestIdentityReservation)
 	}
 	if _, exists := s.guestIdentityLocalReservations[guestID]; exists {
 		return reservation, fmt.Errorf("%w: guest_id=%d local_mutation_in_progress", clusterModels.ErrGuestIdentityClaimConflict, guestID)
 	}
+	// No inventory-wide conflict check: deleting one of a duplicate pair is how
+	// the duplicate gets resolved.
 	report, err := ScanLocalGuestIdentityInventory(s.DB.WithContext(ctx), owner)
 	if err != nil {
 		return reservation, fmt.Errorf("guest_identity_inventory_scan_failed: %w", err)
 	}
-	if err := requireCleanGuestIdentityInventory(report); err != nil {
-		return reservation, err
-	}
 	for _, entry := range report.Entries {
 		if entry.GuestID == guestID && entry.GuestType == references[0].GuestKind && entry.NodeID == owner {
 			token := uuid.NewString()
-			s.guestIdentityLocalReservations[guestID] = token
+			s.guestIdentityLocalReservations[guestID] = localGuestIdentityReservation{token: token, kind: references[0].GuestKind}
 			return clusterServiceInterfaces.GuestIdentityReservation{
 				OwnerNodeID:         owner,
 				Token:               token,
@@ -1092,13 +1140,10 @@ func (s *Service) ListGuestIdentityClaims(ctx context.Context) ([]clusterModels.
 		return nil, err
 	}
 	if clustered {
-		response, err := s.dispatchGuestIdentityControl(ctx, GuestIdentityControlRequest{
-			Operation: guestIdentityControlListClaims,
-		})
-		if err != nil {
-			return nil, err
+		if r := s.Raft(); r == nil || r.State() == raft.Shutdown {
+			return nil, fmt.Errorf("cluster_consensus_unavailable: raft_not_initialized")
 		}
-		return response.Claims, nil
+		return s.replicatedGuestIdentityClaims()
 	}
 	report, err := ScanLocalGuestIdentityInventory(s.DB.WithContext(ctx), s.localGuestIdentityOwner())
 	if err != nil {

@@ -1,4 +1,4 @@
-//go:build linux || freebsd
+//go:build freebsd
 
 // SPDX-License-Identifier: BSD-2-Clause
 //
@@ -13,11 +13,14 @@ package auth
 import (
 	"errors"
 
+	"github.com/alchemillahq/sylve/internal/config"
 	"github.com/msteinert/pam"
 )
 
+var pamStartFunc = pam.StartFunc
+
 func (s *Service) AuthenticatePAM(username, password string) (bool, error) {
-	t, err := pam.StartFunc("login", username, func(s pam.Style, msg string) (string, error) {
+	t, err := pamStartFunc(config.GetPAMService(), username, func(s pam.Style, msg string) (string, error) {
 		switch s {
 		case pam.PromptEchoOff:
 			return password, nil

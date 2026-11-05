@@ -92,11 +92,10 @@ func TestForwardToLeaderPreservesCompletedApplicationResponses(t *testing.T) {
 
 	raftNode := setupSingleRaftForTest(t, "leader-forward-response")
 	defer func() { _ = raftNode.Shutdown().Error() }()
-	service := &cluster.Service{
+	service := withRaft(&cluster.Service{
 		DB:          newClusterHandlerTestDB(t),
-		Raft:        raftNode,
 		AuthService: authForwardStub{},
-	}
+	}, raftNode)
 
 	for index, test := range tests {
 		t.Run(http.StatusText(test.status), func(t *testing.T) {
@@ -281,7 +280,7 @@ func TestDirectClusterForwardingPathsPreserveResponsesAndBudgets(t *testing.T) {
 			"",
 			nil,
 		)
-		response, err := forwardReplicationEventsRequestToNode(
+		response, err := forwardEventsRequestToNode(
 			c,
 			service,
 			"remote-node",
@@ -305,7 +304,7 @@ func TestDirectClusterForwardingPathsPreserveResponsesAndBudgets(t *testing.T) {
 			"",
 			nil,
 		)
-		response, err := forwardBackupEventsRequestToNode(
+		response, err := forwardEventsRequestToNode(
 			c,
 			service,
 			"remote-node",

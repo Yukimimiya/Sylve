@@ -11,13 +11,19 @@ package cluster
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	clusterModels "github.com/alchemillahq/sylve/internal/db/models/cluster"
 	"github.com/alchemillahq/sylve/internal/logger"
+	"github.com/alchemillahq/sylve/internal/services/auth"
 	"github.com/hashicorp/raft"
 )
+
+// errJoinCatchupPending is the normal state of a nonvoter still replaying the
+// log, not a reason to defer its promotion.
+var errJoinCatchupPending = errors.New("replicated_state_catchup_pending")
 
 // GuestIdentityInventoryConflictError preserves the complete deterministic
 // report so handlers can return useful conflict details without parsing text.
@@ -48,6 +54,9 @@ func canonicalSubmittedGuestIdentityInventory(
 	if nodeID == "" {
 		return GuestIdentityInventoryReport{}, fmt.Errorf("joining_node_id_required")
 	}
+	if len(submitted.InFlightGuestIDs) != 0 {
+		return GuestIdentityInventoryReport{}, fmt.Errorf("guest_identity_mutation_in_progress")
+	}
 	for _, entry := range submitted.Entries {
 		if strings.TrimSpace(entry.NodeID) != nodeID {
 			return GuestIdentityInventoryReport{}, fmt.Errorf(
@@ -66,18 +75,6 @@ func canonicalSubmittedGuestIdentityInventory(
 		return GuestIdentityInventoryReport{}, err
 	}
 	return canonical, nil
-}
-
-func validateJoinMembership(
-	configuration raft.Configuration,
-	localNodeID, joiningNodeID string,
-	joiningAddress raft.ServerAddress,
-) (bool, error) {
-	server, err := resolveJoinMembership(configuration, localNodeID, joiningNodeID, joiningAddress)
-	if err != nil {
-		return false, err
-	}
-	return server != nil && server.Suffrage == raft.Voter, nil
 }
 
 func resolveJoinMembership(
@@ -122,15 +119,14 @@ func (s *Service) validateJoinAdmission(providedKey string) error {
 	if details.Cluster == nil {
 		return fmt.Errorf("cluster_not_found")
 	}
-	if !details.Cluster.Enabled || strings.TrimSpace(details.Cluster.Key) == "" ||
-		providedKey == "" || details.Cluster.Key != providedKey {
+	if !details.Cluster.Enabled || !auth.ClusterKeyMatches(providedKey, strings.TrimSpace(details.Cluster.Key)) {
 		return fmt.Errorf("invalid_cluster_key")
 	}
-	if s.Raft == nil {
+	if s.Raft() == nil {
 		return fmt.Errorf("raft_not_initialized")
 	}
-	if s.Raft.State() != raft.Leader {
-		address, id := s.Raft.LeaderWithID()
+	if s.Raft().State() != raft.Leader {
+		address, id := s.Raft().LeaderWithID()
 		return fmt.Errorf(
 			"not_leader; leader_addr=%s; leader_id=%s",
 			string(address),
@@ -166,7 +162,7 @@ func (s *Service) checkJoinInventoryWithClaims(
 	if err != nil {
 		return GuestIdentityInventoryReport{}, nil, false, err
 	}
-	configurationFuture := s.Raft.GetConfiguration()
+	configurationFuture := s.Raft().GetConfiguration()
 	if err := configurationFuture.Error(); err != nil {
 		return GuestIdentityInventoryReport{}, nil, false, fmt.Errorf("get_config_failed: %w", err)
 	}
@@ -261,7 +257,7 @@ func (s *Service) StageJoinInventory(
 		s.clusterJoinMu.Lock()
 		defer s.clusterJoinMu.Unlock()
 
-		configurationFuture := s.Raft.GetConfiguration()
+		configurationFuture := s.Raft().GetConfiguration()
 		if err := configurationFuture.Error(); err != nil {
 			return fmt.Errorf("get_config_failed: %w", err)
 		}
@@ -280,7 +276,7 @@ func (s *Service) StageJoinInventory(
 				status.Suffrage = raftSuffrageName(raft.Voter)
 				return nil
 			}
-			if existingServer.Suffrage != raft.Nonvoter && existingServer.Suffrage != raft.Staging {
+			if existingServer.Suffrage != raft.Nonvoter {
 				return fmt.Errorf("joining_node_membership_not_promotable")
 			}
 			status.Suffrage = raftSuffrageName(existingServer.Suffrage)
@@ -307,7 +303,7 @@ func (s *Service) StageJoinInventory(
 		if err := s.checkpointAndSnapshotLocked(); err != nil {
 			return err
 		}
-		if err := s.Raft.AddNonvoter(serverID, serverAddress, 0, raftApplyTimeout).Error(); err != nil {
+		if err := s.Raft().AddNonvoter(serverID, serverAddress, 0, raftApplyTimeout).Error(); err != nil {
 			return fmt.Errorf("add_nonvoter_failed: %w", err)
 		}
 		status.Suffrage = raftSuffrageName(raft.Nonvoter)
@@ -330,16 +326,6 @@ func (s *Service) StageJoinInventory(
 		Uint64("target_index", status.TargetIndex).
 		Msg("cluster_join_staged_nonvoter")
 	return status, nil
-}
-
-func (s *Service) finalizeStagedJoin(
-	ctx context.Context,
-	nodeID, nodeIP, providedKey string,
-	submitted GuestIdentityInventoryReport,
-) error {
-	return s.finalizeStagedJoinWithVersionCheck(
-		ctx, nodeID, nodeIP, providedKey, submitted, nil,
-	)
 }
 
 func (s *Service) finalizeStagedJoinWithVersionCheck(
@@ -389,7 +375,7 @@ func (s *Service) finalizeStagedJoinWithVersionCheck(
 	}
 
 	serverAddress := raft.ServerAddress(RaftServerAddress(nodeIP))
-	configurationFuture := s.Raft.GetConfiguration()
+	configurationFuture := s.Raft().GetConfiguration()
 	if err := configurationFuture.Error(); err != nil {
 		return fmt.Errorf("get_config_failed: %w", err)
 	}
@@ -405,7 +391,7 @@ func (s *Service) finalizeStagedJoinWithVersionCheck(
 	if server == nil {
 		return fmt.Errorf("joining_node_not_staged")
 	}
-	if server.Suffrage != raft.Nonvoter && server.Suffrage != raft.Staging {
+	if server.Suffrage != raft.Nonvoter {
 		return fmt.Errorf("joining_node_membership_not_promotable")
 	}
 	canonicalJoiner, err := canonicalSubmittedGuestIdentityInventory(nodeID, submitted)
@@ -435,7 +421,8 @@ func (s *Service) finalizeStagedJoinWithVersionCheck(
 			}
 		}
 		return fmt.Errorf(
-			"replicated_state_catchup_pending: target=%d applied=%d",
+			"%w: target=%d applied=%d",
+			errJoinCatchupPending,
 			targetIndex,
 			observedIndex,
 		)
@@ -447,10 +434,10 @@ func (s *Service) finalizeStagedJoinWithVersionCheck(
 		defer s.clusterJoinMu.Unlock()
 		s.replicatedStateMu.Lock()
 		defer s.replicatedStateMu.Unlock()
-		if s.Raft == nil || s.Raft.State() != raft.Leader {
+		if s.Raft() == nil || s.Raft().State() != raft.Leader {
 			return fmt.Errorf("not_leader")
 		}
-		configurationFuture = s.Raft.GetConfiguration()
+		configurationFuture = s.Raft().GetConfiguration()
 		if err := configurationFuture.Error(); err != nil {
 			return fmt.Errorf("get_config_failed: %w", err)
 		}
@@ -467,7 +454,7 @@ func (s *Service) finalizeStagedJoinWithVersionCheck(
 			return fmt.Errorf("joining_node_not_staged")
 		}
 		if server.Suffrage == raft.Voter {
-			verifiedIndex = s.Raft.AppliedIndex()
+			verifiedIndex = s.Raft().AppliedIndex()
 			return nil
 		}
 		reference, err := s.LocalReplicatedStateDigest(

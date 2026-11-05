@@ -20,12 +20,14 @@ import (
 	"slices"
 	"strings"
 
+	containerModels "github.com/alchemillahq/sylve/internal/db/models/container"
 	dynamicDNSModels "github.com/alchemillahq/sylve/internal/db/models/dynamicdns"
 	jailModels "github.com/alchemillahq/sylve/internal/db/models/jail"
 	mdnsModels "github.com/alchemillahq/sylve/internal/db/models/mdns"
 	networkModels "github.com/alchemillahq/sylve/internal/db/models/network"
 	sambaModels "github.com/alchemillahq/sylve/internal/db/models/samba"
 	vmModels "github.com/alchemillahq/sylve/internal/db/models/vm"
+	networkAttachment "github.com/alchemillahq/sylve/internal/network/attachment"
 	"github.com/alchemillahq/sylve/internal/network/interfaceref"
 	"github.com/alchemillahq/sylve/pkg/network/bridgevlan"
 	"github.com/alchemillahq/sylve/pkg/network/iface"
@@ -182,6 +184,9 @@ func normalizeStandardSwitchName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > MaxStandardSwitchNameBytes || !standardSwitchNamePattern.MatchString(name) {
 		return "", invalidStandardSwitch("invalid_standard_switch_name", nil)
+	}
+	if networkAttachment.IsSlirpSwitchName(name) {
+		return "", invalidStandardSwitch("reserved_standard_switch_name", nil)
 	}
 	return name, nil
 }
@@ -530,7 +535,7 @@ func (s *Service) validateStandardSwitchInput(
 		if interfaceObj == nil {
 			return input, invalidStandardSwitch("standard_switch_port_not_found", nil)
 		}
-		if utils.Contains(interfaceObj.Groups, standardSwitchHostVLANGroup) {
+		if slices.Contains(interfaceObj.Groups, standardSwitchHostVLANGroup) {
 			return input, invalidStandardSwitch("standard_switch_host_vlan_cannot_be_port", nil)
 		}
 
@@ -540,7 +545,7 @@ func (s *Service) validateStandardSwitchInput(
 			if vlanErr != nil && !isInterfaceMissingError(vlanErr) {
 				return input, fmt.Errorf("inspect standard switch VLAN interface %q: %w", vlanName, vlanErr)
 			}
-			if vlanErr == nil && vlanObj != nil && !utils.Contains(vlanObj.Groups, "svm-vlan") {
+			if vlanErr == nil && vlanObj != nil && !slices.Contains(vlanObj.Groups, "svm-vlan") {
 				return input, standardSwitchConflict("standard_switch_vlan_interface_conflict", nil)
 			}
 		}
@@ -853,6 +858,11 @@ func (s *Service) checkStandardSwitchUsage(id uint, bridgeName string) error {
 			label: "jail",
 		},
 		{
+			query: s.DB.Model(&containerModels.Network{}).Where("switch_id = ? AND switch_type = ?", id, "standard"),
+			code:  "standard_switch_in_use_by_container_network",
+			label: "container network",
+		},
+		{
 			query: s.DB.Table("dhcp_standard_switches").Where("standard_switch_id = ?", id),
 			code:  "standard_switch_in_use_by_dhcp_config",
 			label: "DHCP config",
@@ -1100,7 +1110,7 @@ func (s *Service) validateAdoptionLegacyVLANInterface(sw networkModels.StandardS
 	if vlanInterface == nil {
 		return nil
 	}
-	if !utils.Contains(vlanInterface.Groups, "svm-vlan") || vlanInterface.VLANParent != portName || vlanInterface.VLANTag != sw.VLAN {
+	if !slices.Contains(vlanInterface.Groups, "svm-vlan") || vlanInterface.VLANParent != portName || vlanInterface.VLANTag != sw.VLAN {
 		return standardSwitchConflict("standard_switch_vlan_interface_conflict",
 			fmt.Errorf("interface %s is not the managed VLAN %d on %s (group=%v parent=%q tag=%d)",
 				name, sw.VLAN, portName, vlanInterface.Groups, vlanInterface.VLANParent, vlanInterface.VLANTag))
@@ -1159,7 +1169,7 @@ func (s *Service) validateAdoptableStandardSwitchBridge(sw networkModels.Standar
 	if bridge == nil {
 		return standardSwitchConflict("standard_switch_bridge_conflict", fmt.Errorf("bridge %s not found", sw.BridgeName))
 	}
-	if !utils.Contains(bridge.Groups, "bridge") {
+	if !slices.Contains(bridge.Groups, "bridge") {
 		return standardSwitchConflict("standard_switch_bridge_conflict", fmt.Errorf("interface %s exists but is not a real bridge", sw.BridgeName))
 	}
 	state, err := syncInspectBridgeVLAN(sw.BridgeName)

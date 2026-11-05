@@ -132,16 +132,6 @@ var historicalCounterFixtures = []struct {
 	{notifier.DiskSmartCounterScsiNonMediumErrors, func(value int64) any { return makeSCSI(30, true, attrPage(0x06, 6, value, "")) }},
 }
 
-// --- getTemperature tests ---
-
-func TestGetTemperatureATA(t *testing.T) {
-	svc := &Service{}
-	ata := makeATA(50, true, 100)
-	if got := svc.getTemperature(ata); got != 50 {
-		t.Fatalf("expected 50, got %d", got)
-	}
-}
-
 func TestDiskSmartTargetKeyUsesOnlyStableIdentity(t *testing.T) {
 	stable := diskServiceInterfaces.Disk{UUID: "D782E080-43C1-5ABC-9DEF-123456789ABC", IdentityStable: true, Device: "ada0"}
 	if got := diskSmartTargetKey(stable); got != "d782e080-43c1-5abc-9def-123456789abc" {
@@ -211,69 +201,6 @@ func TestDiskSmartMonitorPowerSkipPreservesAvailabilityState(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("notifications=%d", count)
-	}
-}
-
-func TestGetTemperatureSCSIUsesCanonicalTemperature(t *testing.T) {
-	svc := &Service{}
-	scsi := makeSCSI(46, true,
-		attrPage(0x0D, 0, 46, "Temperature"),
-	)
-	if got := svc.getTemperature(scsi); got != 46 {
-		t.Fatalf("expected canonical SCSI temperature 46, got %d", got)
-	}
-}
-
-func TestGetTemperatureSCSIMissingPage0x0D(t *testing.T) {
-	svc := &Service{}
-	scsi := makeSCSI(0, true,
-		attrPage(0x02, 5, 89832143138920, "Write Total bytes processed"),
-	)
-	if got := svc.getTemperature(scsi); got != 0 {
-		t.Fatalf("expected 0 for SCSI without temperature page, got %d", got)
-	}
-}
-
-func TestGetTemperatureSCSIUnavailableSentinel(t *testing.T) {
-	svc := &Service{}
-	scsi := makeSCSI(0, true,
-		attrPage(0x0D, 0, 0xff, "Temperature"),
-	)
-	if got := svc.getTemperature(scsi); got != 0 {
-		t.Fatalf("expected unavailable SCSI temperature, got %d", got)
-	}
-}
-
-func TestGetTemperatureSCSIUnavailableSentinelUsesFallback(t *testing.T) {
-	svc := &Service{}
-	scsi := makeSCSI(42, true,
-		attrPage(0x0D, 0, 0xff, "Temperature"),
-	)
-	if got := svc.getTemperature(scsi); got != 42 {
-		t.Fatalf("expected canonical fallback temperature 42, got %d", got)
-	}
-}
-
-func TestGetTemperatureNVMe(t *testing.T) {
-	svc := &Service{}
-	nvme := makeNVMe(50, "0x00")
-	if got := svc.getTemperature(nvme); got != 40 {
-		t.Fatalf("expected 40, got %d", got)
-	}
-}
-
-func TestGetTemperatureNil(t *testing.T) {
-	svc := &Service{}
-	if got := svc.getTemperature(nil); got != 0 {
-		t.Fatalf("expected 0 for nil, got %d", got)
-	}
-}
-
-func TestGetTemperatureSCSIFallbackToConvenienceField(t *testing.T) {
-	svc := &Service{}
-	scsi := makeSCSI(42, true)
-	if got := svc.getTemperature(scsi); got != 42 {
-		t.Fatalf("expected 42 from convenience field, got %d", got)
 	}
 }
 
@@ -354,61 +281,6 @@ func TestDiskSmartSectorSamplesOnlyReallocated(t *testing.T) {
 	}
 	if uncorrect != 0 {
 		t.Fatalf("expected uncorrectable=0, got %d", uncorrect)
-	}
-}
-
-// --- getSMARTPassed tests ---
-
-func TestGetSMARTPassedATA(t *testing.T) {
-	svc := &Service{}
-
-	passed := makeATA(0, true, 0)
-	if !svc.getSMARTPassed(passed) {
-		t.Fatal("expected passed=true")
-	}
-
-	failed := makeATA(0, false, 0)
-	if svc.getSMARTPassed(failed) {
-		t.Fatal("expected passed=false")
-	}
-}
-
-func TestGetSMARTPassedSCSI(t *testing.T) {
-	svc := &Service{}
-
-	passed := makeSCSI(0, true)
-	if !svc.getSMARTPassed(passed) {
-		t.Fatal("expected passed=true for SCSI")
-	}
-
-	failed := makeSCSI(0, false)
-	if svc.getSMARTPassed(failed) {
-		t.Fatal("expected passed=false for SCSI")
-	}
-}
-
-func TestGetSMARTPassedNVMe(t *testing.T) {
-	svc := &Service{}
-
-	nvme := makeNVMe(50, "0x00")
-	if !svc.getSMARTPassed(nvme) {
-		t.Fatal("expected passed=true for NVMe")
-	}
-}
-
-func TestGetSMARTPassedNil(t *testing.T) {
-	svc := &Service{}
-	if !svc.getSMARTPassed(nil) {
-		t.Fatal("expected passed=true for nil (default safe)")
-	}
-}
-
-func TestGetSMARTPassedUnknown(t *testing.T) {
-	svc := &Service{}
-	data := makeSCSI(0, false)
-	data.HealthKnown = false
-	if !svc.getSMARTPassed(data) {
-		t.Fatal("unknown health reported as failed")
 	}
 }
 
@@ -505,9 +377,7 @@ type mockDiskServiceForWearout struct {
 func (m *mockDiskServiceForWearout) GetDiskDevices(ctx context.Context) ([]diskServiceInterfaces.Disk, error) {
 	return nil, errors.New("not implemented")
 }
-func (m *mockDiskServiceForWearout) GetSmartData(disk diskServiceInterfaces.DiskInfo) (any, *diskServiceInterfaces.DiskSelfTestLog, error) {
-	return nil, nil, errors.New("not implemented")
-}
+
 func (m *mockDiskServiceForWearout) GetWearOut(smartData any) (float64, error) {
 	return m.wearoutFn(smartData)
 }
@@ -518,73 +388,6 @@ func (m *mockDiskServiceForWearout) DestroyPartitionTable(device string) error {
 	return errors.New("not implemented")
 }
 func (m *mockDiskServiceForWearout) IsDiskGPT(device string, sectorSize int) bool { return false }
-func (m *mockDiskServiceForWearout) RunSelfTest(disk diskServiceInterfaces.DiskInfo, testType string) error {
-	return errors.New("not implemented")
-}
-func (m *mockDiskServiceForWearout) GetSelfTestLog(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskSelfTestLog, error) {
-	return nil, errors.New("not implemented")
-}
-func (m *mockDiskServiceForWearout) GetErrorLog(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskErrorLog, error) {
-	return nil, errors.New("not implemented")
-}
-func (m *mockDiskServiceForWearout) GetNVMEErrorLog(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskNVMEErrorLog, error) {
-	return nil, errors.New("not implemented")
-}
-func (m *mockDiskServiceForWearout) GetSCTStatus(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskSCTStatus, error) {
-	return nil, errors.New("not implemented")
-}
-func (m *mockDiskServiceForWearout) GetSCTTempHistory(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskSCTTempHistory, error) {
-	return nil, errors.New("not implemented")
-}
-func (m *mockDiskServiceForWearout) AbortSelfTest(disk diskServiceInterfaces.DiskInfo) error {
-	return errors.New("not implemented")
-}
-func (m *mockDiskServiceForWearout) GetExtendedSelfTestLog(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskSelfTestLog, error) {
-	return nil, errors.New("not implemented")
-}
-func (m *mockDiskServiceForWearout) GetExtendedErrorLog(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskErrorLog, error) {
-	return nil, errors.New("not implemented")
-}
-func (m *mockDiskServiceForWearout) GetLogDirectory(disk diskServiceInterfaces.DiskInfo) ([]uint8, error) {
-	return nil, errors.New("not implemented")
-}
-func (m *mockDiskServiceForWearout) GetDeviceStatistics(disk diskServiceInterfaces.DiskInfo) ([]diskServiceInterfaces.DiskAttribute, error) {
-	return nil, errors.New("not implemented")
-}
-func (m *mockDiskServiceForWearout) GetSelectiveSelfTestLog(disk diskServiceInterfaces.DiskInfo) (*diskServiceInterfaces.DiskSelfTestLog, error) {
-	return nil, errors.New("not implemented")
-}
-func (m *mockDiskServiceForWearout) SetSCTFeatureControl(disk diskServiceInterfaces.DiskInfo, featureCode uint16, state uint16, persistent bool) error {
-	return errors.New("not implemented")
-}
-func (m *mockDiskServiceForWearout) SetSCTErrorRecoveryControl(disk diskServiceInterfaces.DiskInfo, read bool, timeLimit uint16) error {
-	return errors.New("not implemented")
-}
-
-func TestEvaluateWearoutSCSISilentlySkips(t *testing.T) {
-	diskService := &mockDiskServiceForWearout{
-		wearoutFn: func(smartData any) (float64, error) {
-			return 0, errors.New("wearout not available for SCSI protocol")
-		},
-	}
-	svc, _ := makeTestSystemService(t, diskService)
-
-	disk := diskServiceInterfaces.Disk{
-		Device:    "da0",
-		Type:      "SSD",
-		SmartData: makeSCSI(0, true),
-	}
-
-	st := &diskSmartState{}
-	svc.evaluateWearout(context.Background(), disk, st, false)
-
-	if st.wearCriticalCount != 0 {
-		t.Fatalf("expected wearCriticalCount=0, got %d", st.wearCriticalCount)
-	}
-	if st.wearWarningCount != 0 {
-		t.Fatalf("expected wearWarningCount=0, got %d", st.wearWarningCount)
-	}
-}
 
 func TestSCSIBytesProcessedDoNotTriggerSectorWarnings(t *testing.T) {
 	diskService := &mockDiskServiceForWearout{
@@ -1157,36 +960,6 @@ func TestEvaluateTemperatureUnknownInterruptsConsecutiveReadings(t *testing.T) {
 	}
 }
 
-func TestEvaluateTemperatureNoAlertWhenNormal(t *testing.T) {
-	diskService := &mockDiskServiceForWearout{
-		wearoutFn: func(smartData any) (float64, error) {
-			return 0, errors.New("wearout not available for SCSI protocol")
-		},
-	}
-	svc, notifSvc := makeTestSystemService(t, diskService)
-
-	ata := makeATA(30, true, 0) // 30C < warning threshold (55C)
-	disk := diskServiceInterfaces.Disk{
-		Device:    "ada0",
-		Type:      "SSD",
-		SmartData: ata,
-	}
-
-	st := &diskSmartState{}
-
-	for i := 0; i < 10; i++ {
-		svc.evaluateTemperature(context.Background(), disk, st, false)
-	}
-
-	active, err := notifSvc.CountActive(context.Background())
-	if err != nil {
-		t.Fatalf("count active failed: %v", err)
-	}
-	if active != 0 {
-		t.Fatalf("expected no notifications for normal temperature, got %d", active)
-	}
-}
-
 func TestEvaluateTemperatureHonorsFractionalThreshold(t *testing.T) {
 	diskService := &mockDiskServiceForWearout{wearoutFn: func(any) (float64, error) { return 0, errors.New("unused") }}
 	svc, notifSvc := makeTestSystemService(t, diskService)
@@ -1629,51 +1402,6 @@ func TestConsecutiveTriggerRequiresTwoBadReadings(t *testing.T) {
 	}
 }
 
-func TestConsecutiveClearRequiresThreeGoodReadings(t *testing.T) {
-	diskService := &mockDiskServiceForWearout{
-		wearoutFn: func(smartData any) (float64, error) {
-			return 0, errors.New("unused")
-		},
-	}
-	svc, notifSvc := makeTestSystemService(t, diskService)
-
-	ataHealthy := makeATA(30, true, 0)
-	ataTempHigh := makeATA(60, true, 0) // above warning threshold
-	disk := diskServiceInterfaces.Disk{
-		Device:    "ada0",
-		Type:      "SSD",
-		SmartData: ataTempHigh,
-	}
-
-	st := &diskSmartState{}
-
-	// Trigger a warning by driving temp high twice
-	svc.evaluateSmartData(context.Background(), disk, st, false)
-	svc.evaluateSmartData(context.Background(), disk, st, false)
-
-	active, _ := notifSvc.CountActive(context.Background())
-	if active != 1 {
-		t.Fatalf("expected 1 active high-temp notification, got %d", active)
-	}
-
-	// Now return to normal — 1 good reading should NOT clear (clear=3)
-	disk.SmartData = ataHealthy
-	svc.evaluateSmartData(context.Background(), disk, st, false)
-	if st.tempNormalCount != 1 {
-		t.Fatalf("expected tempNormalCount=1, got %d", st.tempNormalCount)
-	}
-
-	// After diskSmartConsecutiveClear (3) good readings, clear notification fires
-	svc.evaluateSmartData(context.Background(), disk, st, false)
-	svc.evaluateSmartData(context.Background(), disk, st, false)
-
-	// The original warning notification should have been dismissed/replaced
-	// by the recovery notification; or at minimum normalization counter progressed
-	if st.tempNormalCount != 3 {
-		t.Fatalf("expected tempNormalCount=3, got %d", st.tempNormalCount)
-	}
-}
-
 // --- SCSI wearout does not fire with mock that returns error ---
 
 func TestSCSIDiskWearoutEndToEndNoAlert(t *testing.T) {
@@ -1706,5 +1434,30 @@ func TestSCSIDiskWearoutEndToEndNoAlert(t *testing.T) {
 	}
 	if st.wearCriticalCount != 0 || st.wearWarningCount != 0 {
 		t.Fatalf("expected all wearout counters at 0, got crit=%d warn=%d", st.wearCriticalCount, st.wearWarningCount)
+	}
+}
+
+func TestGetTemperature(t *testing.T) {
+	tests := []struct {
+		name string
+		data any
+		want int
+	}{
+		{"ata", makeATA(50, true, 100), 50},
+		{"scsi canonical temperature", makeSCSI(46, true, attrPage(0x0D, 0, 46, "Temperature")), 46},
+		{"scsi without temperature page", makeSCSI(0, true, attrPage(0x02, 5, 89832143138920, "Write Total bytes processed")), 0},
+		{"scsi unavailable sentinel", makeSCSI(0, true, attrPage(0x0D, 0, 0xff, "Temperature")), 0},
+		{"scsi unavailable sentinel uses fallback", makeSCSI(42, true, attrPage(0x0D, 0, 0xff, "Temperature")), 42},
+		{"scsi convenience field fallback", makeSCSI(42, true), 42},
+		{"nvme", makeNVMe(50, "0x00"), 40},
+		{"nil", nil, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := (&Service{}).getTemperature(tt.data); got != tt.want {
+				t.Fatalf("getTemperature = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }

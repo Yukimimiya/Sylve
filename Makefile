@@ -14,12 +14,13 @@ GO_TEST_FLAGS ?=
 BUILD_TAGS != if [ "$(ARCH)" = "arm64" ]; then echo nosqlite,disable_libutp; else echo nosqlite; fi
 GIT_COMMIT != git rev-parse --short HEAD 2>/dev/null || echo unknown
 BUILD_TIMESTAMP != date -u +%Y-%m-%dT%H:%M:%SZ
+VERSION_LDFLAGS = -X github.com/alchemillahq/sylve/internal/cmd.Commit=$(GIT_COMMIT) -X github.com/alchemillahq/sylve/internal/cmd.BuiltAt=$(BUILD_TIMESTAMP)
 
 INTEGRATION_PACKAGES := \
 	./internal/console \
 	./internal/downloadstorage \
-	./internal/mountutil \
 	./internal/services/disk \
+	./internal/services/container \
 	./internal/services/iscsi \
 	./internal/services/jail \
 	./internal/services/libvirt \
@@ -29,16 +30,18 @@ INTEGRATION_PACKAGES := \
 	./internal/services/zelta \
 	./internal/services/utilities \
 	./internal/services/zfs \
-	./internal/zfsutil \
 	./pkg/network/bridgevlan \
+	./pkg/network/iface \
 	./pkg/pkgmanager \
-	./pkg/network/mdns
+	./pkg/network/mdns \
+	./pkg/storage/mount \
+	./pkg/storage/zfs
 
 ACCEPTANCE_PACKAGE := ./internal/console/integration
 
 .PHONY: all build backend backend-debug backend-cross cross-build-amd64 cross-build-arm64 frontend quality quality-fix
 .PHONY: test test-external-preflight test-integration test-vlan-integration test-acceptance test-acceptance-full test-acceptance-all
-.PHONY: test-smart-integration test-jail-packages-integration clean csmwrap csmwrap-assets csmwrap-download
+.PHONY: test-smart-integration test-jail-packages-integration clean csmwrap csmwrap-assets csmwrap-download catalog-download
 
 all: build
 
@@ -47,12 +50,12 @@ build: csmwrap-assets frontend backend
 backend: csmwrap-assets
 	mkdir -p $(BIN_DIR)
 	CGO_ENABLED=1 GOOS=freebsd GOARCH=$(ARCH) \
-		go build -tags="$(BUILD_TAGS)" -ldflags="-s -w -X github.com/alchemillahq/sylve/internal/cmd.Commit=$(GIT_COMMIT) -X github.com/alchemillahq/sylve/internal/cmd.BuiltAt=$(BUILD_TIMESTAMP)" -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/sylve
+		go build -tags="$(BUILD_TAGS)" -ldflags="-s -w $(VERSION_LDFLAGS)" -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/sylve
 
 backend-debug: csmwrap-assets
 	mkdir -p $(BIN_DIR)
 	CGO_ENABLED=1 GOOS=freebsd GOARCH=$(ARCH) \
-		go build -tags="$(BUILD_TAGS)" -gcflags="all=-N -l" -ldflags="-X github.com/alchemillahq/sylve/internal/cmd.Commit=$(GIT_COMMIT) -X github.com/alchemillahq/sylve/internal/cmd.BuiltAt=$(BUILD_TIMESTAMP)" -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/sylve
+		go build -tags="$(BUILD_TAGS)" -gcflags="all=-N -l" -ldflags="$(VERSION_LDFLAGS)" -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/sylve
 
 backend-cross: csmwrap-assets
 	mkdir -p $(BIN_DIR)
@@ -81,7 +84,7 @@ backend-cross: csmwrap-assets
 	CGO_LDFLAGS="-fuse-ld=lld --sysroot=$$SYSROOT" \
 	CC="clang --target=$$TARGET --sysroot=$$SYSROOT" \
 	CXX="clang++ --target=$$TARGET --sysroot=$$SYSROOT" \
-	go build -tags="$(BUILD_TAGS)" -ldflags="-s -w -X github.com/alchemillahq/sylve/internal/cmd.Commit=$(GIT_COMMIT) -X github.com/alchemillahq/sylve/internal/cmd.BuiltAt=$(BUILD_TIMESTAMP)" -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/sylve
+	go build -tags="$(BUILD_TAGS)" -ldflags="-s -w $(VERSION_LDFLAGS)" -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/sylve
 
 cross-build-amd64:
 	$(MAKE) backend-cross ARCH=amd64
@@ -95,6 +98,9 @@ csmwrap:
 csmwrap-download:
 	./scripts/download-csmwrap.sh
 
+catalog-download:
+	./scripts/download-catalog.sh
+
 csmwrap-assets:
 	@if [ "$(ARCH)" = "amd64" ] && \
 		{ [ ! -f internal/assets/csmwrap/CSMWrap.iso.gz ] || \
@@ -104,7 +110,6 @@ csmwrap-assets:
 
 frontend:
 	npm ci --prefix web
-	npm run check --prefix web
 	npm run build --prefix web
 	mkdir -p internal/assets/web-files
 	cp -rf web/build/* internal/assets/web-files/
@@ -229,6 +234,7 @@ GO ?= go
 INSTALLER_BIN_DIR ?= installer/out
 INSTALLER_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 INSTALLER_SYLVE_COMMIT ?=
+INSTALLER_LDFLAGS = -s -w -X main.version=$(INSTALLER_VERSION) -X github.com/alchemillahq/sylve/installer/backend/internal/engine.releaseCommit=$(INSTALLER_SYLVE_COMMIT)
 
 .PHONY: installer-help installer-backend installer-backend-linux installer-ui installer-boot-art
 .PHONY: installer-stage-live installer-image installer-test installer-vet installer-fmt installer-clean
@@ -242,17 +248,13 @@ installer-backend: ## Cross-compile the installer daemon (freebsd/amd64)
 	fi
 	mkdir -p "$(INSTALLER_BIN_DIR)"
 	cd installer/backend && CGO_ENABLED=0 GOOS=freebsd GOARCH=$(ARCH) \
-		$(GO) build -trimpath \
-		-ldflags="-s -w -X main.version=$(INSTALLER_VERSION) \
-		-X github.com/alchemillahq/sylve/installer/backend/internal/engine.releaseCommit=$(INSTALLER_SYLVE_COMMIT)" \
+		$(GO) build -trimpath -ldflags="$(INSTALLER_LDFLAGS)" \
 		-o "$(abspath $(INSTALLER_BIN_DIR))/sylve-installerd" ./cmd/sylve-installerd
 
 installer-backend-linux: ## Build the daemon for local Linux development
 	mkdir -p "$(INSTALLER_BIN_DIR)"
 	cd installer/backend && CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) \
-		$(GO) build -trimpath \
-		-ldflags="-s -w -X main.version=$(INSTALLER_VERSION) \
-		-X github.com/alchemillahq/sylve/installer/backend/internal/engine.releaseCommit=$(INSTALLER_SYLVE_COMMIT)" \
+		$(GO) build -trimpath -ldflags="$(INSTALLER_LDFLAGS)" \
 		-o "$(abspath $(INSTALLER_BIN_DIR))/sylve-installerd-linux" ./cmd/sylve-installerd
 
 installer-ui: ## Build and embed the installer kiosk UI

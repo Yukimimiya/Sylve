@@ -9,6 +9,7 @@
  */
 
 import { z } from 'zod/v4';
+import { SimpleContainerSchema } from '../container/container';
 import { SimpleJailSchema, SimpleJailTemplateSchema } from '../jail/jail';
 import { SimpleVmSchema, SimpleVmTemplateSchema } from '../vm/vm';
 
@@ -89,7 +90,8 @@ export const NodeResourceSchema = z.object({
 	jails: z.array(SimpleJailSchema).nullable().default([]),
 	jailTemplates: z.array(SimpleJailTemplateSchema).nullable().default([]),
 	vms: z.array(SimpleVmSchema).nullable().default([]),
-	vmTemplates: z.array(SimpleVmTemplateSchema).nullable().default([])
+	vmTemplates: z.array(SimpleVmTemplateSchema).nullable().default([]),
+	containers: z.array(SimpleContainerSchema).nullable().default([])
 });
 
 export const PeerRemovalDependencySchema = z.object({
@@ -106,11 +108,9 @@ export const PeerRemovalConflictSchema = z.object({
 });
 
 export type Cluster = z.infer<typeof ClusterSchema>;
-export type RaftNode = z.infer<typeof RaftNodeSchema>;
 export type ClusterDetails = z.infer<typeof ClusterDetailsSchema>;
 export type ClusterJoinStatus = z.infer<typeof ClusterJoinStatusSchema>;
 export type ClusterLeaveStatus = z.infer<typeof ClusterLeaveStatusSchema>;
 export type ClusterNode = z.infer<typeof ClusterNodeSchema>;
 export type NodeResource = z.infer<typeof NodeResourceSchema>;
-export type PeerRemovalDependency = z.infer<typeof PeerRemovalDependencySchema>;
 export type PeerRemovalConflict = z.infer<typeof PeerRemovalConflictSchema>;

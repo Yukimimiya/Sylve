@@ -8,7 +8,6 @@
  * under sponsorship from the FreeBSD Foundation.
  */
 
-import { getIcon, loadIcon } from '@iconify/svelte';
 import { sha256 as nobleSha256 } from '@noble/hashes/sha2.js';
 import { customRandom, nanoid } from 'nanoid';
 import isEmail from 'validator/lib/isEmail';

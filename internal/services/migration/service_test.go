@@ -23,12 +23,21 @@ import (
 	jailModels "github.com/alchemillahq/sylve/internal/db/models/jail"
 	networkModels "github.com/alchemillahq/sylve/internal/db/models/network"
 	vmModels "github.com/alchemillahq/sylve/internal/db/models/vm"
+	migrationIface "github.com/alchemillahq/sylve/internal/interfaces/services/migration"
 	networkAttachment "github.com/alchemillahq/sylve/internal/network/attachment"
 	"github.com/alchemillahq/sylve/internal/testutil"
 	"github.com/alchemillahq/sylve/pkg/network/bridgevlan"
 	"github.com/alchemillahq/sylve/pkg/utils"
 	"gorm.io/gorm"
 )
+
+func TestValidateMigrationRejectsContainerBeforeDependencies(t *testing.T) {
+	service := &Service{}
+	result, err := service.ValidateMigration(t.Context(), migrationIface.MigrateRequest{GuestType: clusterModels.GuestIdentityKindContainer, GuestID: 701})
+	if err != nil || result.Allowed || !slices.Contains(result.Reasons, "unsupported_guest_type") {
+		t.Fatalf("container reached VM/jail migration machinery: %+v %v", result, err)
+	}
+}
 
 func TestCanonicalMigrationGuestDatasetUsesExactGuestIDBoundary(t *testing.T) {
 	tests := []struct {
@@ -333,13 +342,6 @@ func TestBackupEventReferencesGuest_Jail(t *testing.T) {
 	}
 }
 
-func TestReplicationEventConflictReason(t *testing.T) {
-	reason := "guest_has_running_replication_event"
-	if reason == "" {
-		t.Fatal("reason string must not be empty")
-	}
-}
-
 func TestBuildVMTargetProbeIncludesDisabledSwitchIdentity(t *testing.T) {
 	originalResolve := resolveMigrationVMNetworkAttachment
 	originalResolveIdentity := resolveMigrationVMNetworkIdentity
@@ -461,19 +463,5 @@ func TestBuildJailTargetProbePreservesVLANPolicy(t *testing.T) {
 		got.Attachment.VLANPolicy == nil || got.Attachment.VLANPolicy.Mode != bridgevlan.ModeAccess ||
 		got.Attachment.VLANPolicy.UntaggedVLAN == nil || *got.Attachment.VLANPolicy.UntaggedVLAN != 10 {
 		t.Fatalf("network probe = %+v", got)
-	}
-}
-
-func TestActiveLifecycleTaskConflictReason(t *testing.T) {
-	reason := "guest_has_active_lifecycle_task"
-	if reason == "" {
-		t.Fatal("reason string must not be empty")
-	}
-}
-
-func TestBackupEventConflictReason(t *testing.T) {
-	reason := "guest_has_running_backup_event"
-	if reason == "" {
-		t.Fatal("reason string must not be empty")
 	}
 }

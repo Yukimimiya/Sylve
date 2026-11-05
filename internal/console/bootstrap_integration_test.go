@@ -19,6 +19,7 @@ import (
 
 	"github.com/alchemillahq/sylve/internal/bootstrap"
 	"github.com/alchemillahq/sylve/internal/db/models"
+	containerModels "github.com/alchemillahq/sylve/internal/db/models/container"
 	jailModels "github.com/alchemillahq/sylve/internal/db/models/jail"
 	networkModels "github.com/alchemillahq/sylve/internal/db/models/network"
 	utilitiesModels "github.com/alchemillahq/sylve/internal/db/models/utilities"
@@ -111,6 +112,7 @@ func newBootstrapIntegrationDB(t *testing.T) *gorm.DB {
 		&networkModels.DHCPConfig{}, &networkModels.DHCPRange{},
 		&bootstrapIntegrationVM{}, &vmModels.Network{},
 		&bootstrapIntegrationJail{}, &jailModels.Network{},
+		&containerModels.Network{},
 	)
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -292,15 +294,17 @@ func TestIntegrationBootstrapPoolFailurePreservesSuccessfulPool(t *testing.T) {
 
 func TestIntegrationBootstrapManualSwitchPreservesExternalBridges(t *testing.T) {
 	f := newBootstrapIntegrationFixture(t, false)
-	createBridge := func() string {
+	createBridge := func(suffix string) string {
 		t.Helper()
-		output, err := exec.Command("/sbin/ifconfig", "bridge", "create").CombinedOutput()
+		// A unique name, so a bridge another package creates can't take over the
+		// bridgeN name the kernel frees when this test destroys its bridge.
+		bridge := "mb" + utils.ShortHash(f.name+suffix)
+		output, err := exec.Command("/sbin/ifconfig", "bridge", "create", "name", bridge).CombinedOutput()
 		if err != nil {
 			t.Fatalf("create owned external bridge: %v: %s", err, output)
 		}
-		bridge := strings.TrimSpace(string(output))
-		if bridge == "" {
-			t.Fatal("owned bridge creation returned no interface name")
+		if strings.TrimSpace(string(output)) != bridge {
+			t.Fatalf("created owned bridge %q, want %q", strings.TrimSpace(string(output)), bridge)
 		}
 		t.Cleanup(func() {
 			if _, err := exec.Command("/sbin/ifconfig", bridge).CombinedOutput(); err == nil {
@@ -311,7 +315,7 @@ func TestIntegrationBootstrapManualSwitchPreservesExternalBridges(t *testing.T) 
 		})
 		return bridge
 	}
-	firstBridge, secondBridge := createBridge(), createBridge()
+	firstBridge, secondBridge := createBridge("first"), createBridge("second")
 	writeManual := func(bridge string) {
 		t.Helper()
 		doc := f.document(false, false)

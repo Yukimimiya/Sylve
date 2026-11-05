@@ -26,17 +26,9 @@ const (
 	ReplicationHAReasonReducedRedundancy         = "reduced_redundancy_one_voter_down"
 	ReplicationHAReasonQuorumLost                = "quorum_lost"
 	replicationHAIneligibleErrorPrefix           = "replication_policy_ha_ineligible"
-	replicationHAStaticReasonsKeyTransition      = ReplicationHAReasonTransitionRemoteTarget
 	replicationHARemoteReasonDefault             = ReplicationHAReasonRemoteTarget
 	replicationHARemoteReasonTransitionProjected = ReplicationHAReasonTransitionRemoteTarget
 )
-
-var replicationHAStaticReasonSet = map[string]struct{}{
-	ReplicationHAReasonMinThreeVoters:       {},
-	ReplicationHAReasonMinOneTarget:         {},
-	ReplicationHAReasonRemoteTarget:         {},
-	replicationHAStaticReasonsKeyTransition: {},
-}
 
 type ReplicationHAIneligibleError struct {
 	Reasons []string
@@ -116,19 +108,6 @@ func ParseReplicationHAIneligibleReasons(err error) []string {
 		return nil
 	}
 	return normalizeReplicationHAReasons(strings.Split(reasonPart, ","))
-}
-
-func IsReplicationHAStaticIneligibleError(err error) bool {
-	reasons := ParseReplicationHAIneligibleReasons(err)
-	if len(reasons) == 0 {
-		return false
-	}
-	for _, reason := range reasons {
-		if _, ok := replicationHAStaticReasonSet[reason]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 func ReplicationHAReasonSetIncludes(reasons []string, reason string) bool {
@@ -272,20 +251,20 @@ func (s *Service) evaluateReplicationPolicyHA(
 }
 
 func (s *Service) buildReplicationHARuntimeSnapshot() replicationHARuntimeSnapshot {
-	if s == nil || s.Raft == nil {
+	if s == nil || s.Raft() == nil {
 		return replicationHARuntimeSnapshot{}
 	}
 
-	cfgFuture := s.Raft.GetConfiguration()
+	cfgFuture := s.Raft().GetConfiguration()
 	if err := cfgFuture.Error(); err != nil {
 		return replicationHARuntimeSnapshot{}
 	}
 
-	leaderAddress, leaderID := s.Raft.LeaderWithID()
+	leaderAddress, leaderID := s.Raft().LeaderWithID()
 	leaderHealthy := strings.TrimSpace(string(leaderID)) != "" ||
 		strings.TrimSpace(string(leaderAddress)) != ""
-	if leaderHealthy && s.Raft.State() == raft.Leader {
-		leaderHealthy = s.Raft.VerifyLeader().Error() == nil
+	if leaderHealthy && s.Raft().State() == raft.Leader {
+		leaderHealthy = s.Raft().VerifyLeader().Error() == nil
 	}
 	nodes, err := s.Nodes()
 	if err != nil {

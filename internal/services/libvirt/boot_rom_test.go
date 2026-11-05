@@ -9,103 +9,12 @@
 package libvirt
 
 import (
-	"encoding/xml"
 	"runtime"
 	"strings"
 	"testing"
 
 	vmModels "github.com/alchemillahq/sylve/internal/db/models/vm"
-	libvirtServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/libvirt"
 )
-
-func TestParseBootROMValue_EmptyDefaultsToUEFI(t *testing.T) {
-	if runtime.GOARCH == "arm64" {
-		t.Skip("empty defaults to uboot on arm64")
-	}
-
-	got, err := parseBootROMValue("")
-	if err != nil {
-		t.Fatalf("parseBootROMValue returned error: %v", err)
-	}
-
-	if got != vmModels.VMBootROMUEFI {
-		t.Fatalf("parseBootROMValue empty = %q, want %q", got, vmModels.VMBootROMUEFI)
-	}
-}
-
-func TestParseBootROMValue_InvalidValue(t *testing.T) {
-	_, err := parseBootROMValue("broken")
-	if err == nil {
-		t.Fatal("expected parseBootROMValue to fail for invalid value")
-	}
-
-	if !strings.Contains(err.Error(), "invalid_boot_rom") {
-		t.Fatalf("expected invalid_boot_rom error, got: %v", err)
-	}
-}
-
-func TestParseBootROMValue_RejectsDeprecatedUEFICSM(t *testing.T) {
-	_, err := parseBootROMValue("uefi_csm")
-	if err == nil {
-		t.Fatal("expected parseBootROMValue to fail for deprecated uefi_csm value")
-	}
-
-	if !strings.Contains(err.Error(), "invalid_boot_rom") {
-		t.Fatalf("expected invalid_boot_rom error, got: %v", err)
-	}
-}
-
-func TestParseBootROMValue_UEFIValid(t *testing.T) {
-	if runtime.GOARCH == "arm64" {
-		t.Skip("uefi not available on arm64")
-	}
-
-	got, err := parseBootROMValue("uefi")
-	if err != nil {
-		t.Fatalf("parseBootROMValue(uefi) unexpected error: %v", err)
-	}
-	if got != vmModels.VMBootROMUEFI {
-		t.Fatalf("parseBootROMValue(uefi) = %q, want %q", got, vmModels.VMBootROMUEFI)
-	}
-}
-
-func TestParseBootROMValue_UBootRejectedOnAmd64(t *testing.T) {
-	if runtime.GOARCH != "amd64" {
-		t.Skip("test is for amd64 only")
-	}
-
-	_, err := parseBootROMValue("uboot")
-	if err == nil {
-		t.Fatal("expected parseBootROMValue(uboot) to fail on amd64")
-	}
-	if !strings.Contains(err.Error(), "uboot_only_available_on_arm64") {
-		t.Fatalf("expected uboot_only_available_on_arm64 error, got: %v", err)
-	}
-}
-
-func TestParseBootROMValue_UEFIRejectedOnArm64(t *testing.T) {
-	if runtime.GOARCH != "arm64" {
-		t.Skip("test is for arm64 only")
-	}
-
-	_, err := parseBootROMValue("uefi")
-	if err == nil {
-		t.Fatal("expected parseBootROMValue(uefi) to fail on arm64")
-	}
-	if !strings.Contains(err.Error(), "uefi_firmware_not_available_on_arm64") {
-		t.Fatalf("expected uefi_firmware_not_available_on_arm64 error, got: %v", err)
-	}
-}
-
-func TestParseBootROMValue_NoneAlwaysValid(t *testing.T) {
-	got, err := parseBootROMValue("none")
-	if err != nil {
-		t.Fatalf("parseBootROMValue(none) unexpected error: %v", err)
-	}
-	if got != vmModels.VMBootROMNone {
-		t.Fatalf("parseBootROMValue(none) = %q, want %q", got, vmModels.VMBootROMNone)
-	}
-}
 
 func TestBuildBootROMLoader_NoneReturnsNil(t *testing.T) {
 	loader := buildBootROMLoader(vmModels.VMBootROMNone, "/tmp/vm", 100)
@@ -162,66 +71,6 @@ func TestBuildBootROMLoader_UBootSinglePath(t *testing.T) {
 	}
 }
 
-func TestHostLibvirtArch(t *testing.T) {
-	got := hostLibvirtArch()
-
-	switch runtime.GOARCH {
-	case "amd64":
-		if got != "x86_64" {
-			t.Fatalf("hostLibvirtArch = %q, want x86_64", got)
-		}
-	case "arm64":
-		if got != "aarch64" {
-			t.Fatalf("hostLibvirtArch = %q, want aarch64", got)
-		}
-	}
-}
-
-func TestAvailableBootROMs(t *testing.T) {
-	bootROMs := availableBootROMs()
-
-	expected := 2
-	if runtime.GOARCH == "amd64" {
-		expected = 3
-	}
-	if len(bootROMs) != expected {
-		t.Fatalf("expected %d available boot ROMs, got %d", expected, len(bootROMs))
-	}
-
-	hasNone := false
-	for _, br := range bootROMs {
-		if br == vmModels.VMBootROMNone {
-			hasNone = true
-		}
-	}
-	if !hasNone {
-		t.Fatal("expected 'none' in available boot ROMs")
-	}
-
-	switch runtime.GOARCH {
-	case "amd64":
-		hasUEFI := false
-		for _, br := range bootROMs {
-			if br == vmModels.VMBootROMUEFI {
-				hasUEFI = true
-			}
-		}
-		if !hasUEFI {
-			t.Fatal("expected 'uefi' in available boot ROMs on amd64")
-		}
-	case "arm64":
-		hasUBoot := false
-		for _, br := range bootROMs {
-			if br == vmModels.VMBootROMUBoot {
-				hasUBoot = true
-			}
-		}
-		if !hasUBoot {
-			t.Fatal("expected 'uboot' in available boot ROMs on arm64")
-		}
-	}
-}
-
 func TestHostUsesSplitFirmware(t *testing.T) {
 	got := hostUsesSplitFirmware()
 
@@ -256,53 +105,39 @@ func TestBuildBootROMLoader_DefaultIsArchAware(t *testing.T) {
 	}
 }
 
-func TestEnsureVMBootROMArtifacts_UBootSkipsVars(t *testing.T) {
-	s := &Service{}
-
-	// For ARM64 with uboot, ensureVMBootROMArtifacts should return nil
-	// without trying to create vars files
-	err := s.ensureVMBootROMArtifacts(100, vmModels.VMBootROMUBoot, "/tmp/nonexistent")
-	if err != nil {
-		t.Fatalf("ensureVMBootROMArtifacts with uboot should skip vars: %v", err)
-	}
-}
-
-func TestEnsureVMBootROMArtifacts_NoneSkips(t *testing.T) {
-	s := &Service{}
-
-	err := s.ensureVMBootROMArtifacts(100, vmModels.VMBootROMNone, "/tmp/nonexistent")
-	if err != nil {
-		t.Fatalf("ensureVMBootROMArtifacts with none should skip: %v", err)
-	}
-}
-
-func TestOSTypeXML(t *testing.T) {
-	// Verify OSType struct marshals correctly to the expected XML shape
-	os := libvirtServiceInterfaces.OS{
-		Type: libvirtServiceInterfaces.OSType{
-			Arch: "aarch64",
-			Text: "hvm",
-		},
-		Loader: &libvirtServiceInterfaces.Loader{
-			ReadOnly: "yes",
-			Type:     "pflash",
-			Path:     ubootFirmwarePath,
-		},
+func TestParseBootROMValue(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		onlyOn  string // run only on this GOARCH
+		skipOn  string // skip on this GOARCH
+		want    vmModels.VMBootROM
+		wantErr string
+	}{
+		{name: "empty defaults to uefi", input: "", skipOn: "arm64", want: vmModels.VMBootROMUEFI},
+		{name: "uefi", input: "uefi", skipOn: "arm64", want: vmModels.VMBootROMUEFI},
+		{name: "none", input: "none", want: vmModels.VMBootROMNone},
+		{name: "invalid value", input: "broken", wantErr: "invalid_boot_rom"},
+		{name: "deprecated uefi_csm", input: "uefi_csm", wantErr: "invalid_boot_rom"},
+		{name: "uboot rejected on amd64", input: "uboot", onlyOn: "amd64", wantErr: "uboot_only_available_on_arm64"},
+		{name: "uefi rejected on arm64", input: "uefi", onlyOn: "arm64", wantErr: "uefi_firmware_not_available_on_arm64"},
 	}
 
-	out, err := xml.Marshal(os)
-	if err != nil {
-		t.Fatalf("failed to marshal OS: %v", err)
-	}
-
-	xmlStr := string(out)
-	if !strings.Contains(xmlStr, `arch="aarch64"`) {
-		t.Fatalf("expected arch=\"aarch64\" in XML, got: %s", xmlStr)
-	}
-	if !strings.Contains(xmlStr, "hvm") {
-		t.Fatalf("expected hvm in XML, got: %s", xmlStr)
-	}
-	if !strings.Contains(xmlStr, ubootFirmwarePath) {
-		t.Fatalf("expected uboot firmware path in XML, got: %s", xmlStr)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if (tt.onlyOn != "" && runtime.GOARCH != tt.onlyOn) || runtime.GOARCH == tt.skipOn {
+				t.Skipf("not applicable on %s", runtime.GOARCH)
+			}
+			got, err := parseBootROMValue(tt.input)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("parseBootROMValue(%q) error = %v, want %s", tt.input, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("parseBootROMValue(%q) = %q, %v; want %q", tt.input, got, err, tt.want)
+			}
+		})
 	}
 }

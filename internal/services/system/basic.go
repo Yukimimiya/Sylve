@@ -110,6 +110,9 @@ func normalizeInitializeRequest(req systemServiceInterfaces.InitializeRequest) (
 		normalized.Services = append(normalized.Services, service)
 	}
 
+	if err := containerServiceSet(normalized.Services); err != nil {
+		validationErrors = append(validationErrors, newInitializationError(InitializationErrorBadRequest, err))
+	}
 	return normalized, validationErrors
 }
 
@@ -149,7 +152,7 @@ func (s *Service) Initialize(ctx context.Context, req systemServiceInterfaces.In
 
 	var basicSettings models.BasicSettings
 	rowExists := true
-	err := s.DB.First(&basicSettings).Error
+	err := s.DB.WithContext(ctx).First(&basicSettings).Error
 
 	if err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -178,8 +181,18 @@ func (s *Service) Initialize(ctx context.Context, req systemServiceInterfaces.In
 			}
 		}
 	}
+	return s.initializeStorageLocked(ctx, req, basicSettings, rowExists)
+}
 
+func (s *Service) initializeStorageLocked(ctx context.Context, req systemServiceInterfaces.InitializeRequest, basicSettings models.BasicSettings, rowExists bool) (errs []error) {
 	var newSets []*gzfs.Dataset
+	defer func() {
+		if len(errs) > 0 {
+			if err := cleanupCreatedDatasets(ctx, s.GZFS, newSets); err != nil {
+				errs = append(errs, newInitializationError(InitializationErrorInternal, err))
+			}
+		}
+	}()
 
 	for _, poolName := range req.Pools {
 		pool, err := s.GZFS.Zpool.Get(ctx, poolName)
@@ -198,18 +211,11 @@ func (s *Service) Initialize(ctx context.Context, req systemServiceInterfaces.In
 		}
 
 		created, err := s.ensureSylveDatasetsOnPool(ctx, pool.Name)
+		newSets = append(newSets, created...)
 		if err != nil {
-			for i := len(newSets) - 1; i >= 0; i-- {
-				newSets[i].Destroy(ctx, true, false)
-			}
-
 			return []error{newInitializationError(InitializationErrorInternal, err)}
 		}
-
-		newSets = append(newSets, created...)
 	}
-
-	var errs []error
 
 	if !s.IsSupportedArch() {
 		errs = append(errs, newInitializationError(
@@ -297,7 +303,7 @@ func (s *Service) Initialize(ctx context.Context, req systemServiceInterfaces.In
 	basicSettings.Initialized = true
 	basicSettings.Restarted = false
 
-	if err := s.DB.Transaction(func(tx *gorm.DB) error {
+	if err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if rowExists {
 			if err := tx.Save(&basicSettings).Error; err != nil {
 				return err
@@ -305,7 +311,6 @@ func (s *Service) Initialize(ctx context.Context, req systemServiceInterfaces.In
 		} else if err := tx.Create(&basicSettings).Error; err != nil {
 			return err
 		}
-
 		return db.InvalidateZFSCaches(tx)
 	}); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
@@ -376,7 +381,10 @@ func (s *Service) applyBootstrapSettingsLocked(ctx context.Context, req systemSe
 		return empty, false, err
 	}
 	defer release()
+	return s.applyBootstrapStorageLocked(ctx, req, basicSettings, rowExists)
+}
 
+func (s *Service) applyBootstrapStorageLocked(ctx context.Context, req systemServiceInterfaces.BootstrapSettingsRequest, basicSettings models.BasicSettings, rowExists bool) (systemServiceInterfaces.BootstrapSettingsResult, bool, error) {
 	finalPools := normalizeUsablePools(basicSettings.Pools)
 	poolSet := make(map[string]struct{}, len(finalPools))
 	for _, pool := range finalPools {
@@ -438,7 +446,10 @@ func (s *Service) applyBootstrapSettingsLocked(ctx context.Context, req systemSe
 
 		_, alreadyEnabled := serviceSet[service]
 		item := newBootstrapItem("service", index, string(service), systemServiceInterfaces.BootstrapApplied, "")
-		if err := s.bootstrapServicePrecheck(service); err != nil {
+		if err := containerServiceSet(append(slices.Clone(finalServices), req.Services...)); err != nil && service == models.Containers {
+			item.result.Status = systemServiceInterfaces.BootstrapFailed
+			item.result.Message = err.Error()
+		} else if err := s.bootstrapServicePrecheck(service); err != nil {
 			item.result.Status = systemServiceInterfaces.BootstrapWarning
 			if alreadyEnabled {
 				item.result.Message = fmt.Sprintf("precheck_failed_existing_service_preserved: %v", err)
@@ -533,6 +544,8 @@ func (s *Service) bootstrapServicePrecheck(service models.AvailableService) erro
 		return s.CheckSambaServer()
 	case models.WireGuard:
 		return s.CheckWireGuard()
+	case models.Containers:
+		return s.CheckContainers()
 	default:
 		return nil
 	}

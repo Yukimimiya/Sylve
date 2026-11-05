@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import { storage } from '$lib';
 	import NotificationBell from '$lib/components/custom/Notifications/Bell.svelte';
-	import NodeTreeView from '$lib/components/custom/NodeTreeView.svelte';
+	import TreeView from '$lib/components/custom/TreeView.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import * as Resizable from '$lib/components/ui/resizable';
 	import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
@@ -12,14 +12,9 @@
 		loadEnabledServicesForHostname,
 		syncActiveEnabledServices
 	} from '$lib/utils/enabled-services';
-	let openCategories: { [key: string]: boolean } = $state({});
 	import { watch } from 'runed';
 	import { useSafeGoto } from '$lib/hooks/navigation.svelte';
 	import { getGuestSections, type GuestSection } from '$lib/guest-navigation';
-
-	const toggleCategory = (label: string) => {
-		openCategories[label] = !openCategories[label];
-	};
 
 	let node = $derived(page.url.pathname.split('/')[1] || '');
 
@@ -52,10 +47,17 @@
 		const hasIscsi = enabledServices.includes('iscsi');
 		const hasNfs = enabledServices.includes('nfs');
 		const hasMdns = enabledServices.includes('mdns');
+		const hasContainers = enabledServices.includes('containers');
 
-		const guestType = page.params.rid ? 'vm' : page.params.ctid ? 'jail' : null;
+		const guestType = page.params.rid
+			? 'vm'
+			: page.params.ctid
+				? 'jail'
+				: page.params.ocid
+					? 'container'
+					: null;
 		if (guestType) {
-			const guestId = guestType === 'vm' ? page.params.rid : page.params.ctid;
+			const guestId = page.params.rid ?? page.params.ctid ?? page.params.ocid;
 			const jailType =
 				guestType === 'jail' && page.data.node === node && page.data.ctId === Number(guestId)
 					? page.data.jail?.type
@@ -291,6 +293,23 @@
 					}
 				].filter(Boolean) as NodeItem[]
 			},
+			hasContainers && {
+				label: 'Containers',
+				icon: 'lucide--container',
+				children: [
+					{ label: 'Networks', icon: 'mdi--lan', href: `/${node}/containers/networks` },
+					{
+						label: 'Images',
+						icon: 'mdi--layers-triple-outline',
+						href: `/${node}/containers/images`
+					},
+					{
+						label: 'Registries',
+						icon: 'mdi--key-chain-variant',
+						href: `/${node}/containers/registries`
+					}
+				]
+			},
 			{
 				label: 'Utilities',
 				icon: 'mdi--tools',
@@ -445,7 +464,7 @@
 					}
 				]
 			}
-		];
+		].filter(Boolean) as NodeItem[];
 	});
 
 	interface Props {
@@ -470,6 +489,11 @@
 			const ctId = pathName.split('/')[3];
 			if (pathName === `/${node}/jail/${ctId}`) {
 				useSafeGoto(`/${node}/jail/${ctId}/summary`, { replaceState: true });
+			}
+		} else if (pathName.startsWith(`/${node}/container/`)) {
+			const ocId = pathName.split('/')[3];
+			if (pathName === `/${node}/container/${ocId}`) {
+				useSafeGoto(`/${node}/container/${ocId}/summary`, { replaceState: true });
 			}
 		}
 	});
@@ -521,7 +545,7 @@
 						<ul>
 							<ScrollArea orientation="both" class="h-full w-full">
 								{#each nodeItems as item (item.href ?? item.icon)}
-									<NodeTreeView {item} onToggle={toggleCategory} bind:this={openCategories} />
+									<TreeView {item} />
 								{/each}
 							</ScrollArea>
 						</ul>

@@ -22,7 +22,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -36,11 +35,13 @@ import (
 	"github.com/alchemillahq/sylve/internal/db/models"
 	infoModels "github.com/alchemillahq/sylve/internal/db/models/info"
 	"github.com/alchemillahq/sylve/internal/repl"
+	containerService "github.com/alchemillahq/sylve/internal/services/container"
 	infoService "github.com/alchemillahq/sylve/internal/services/info"
 	jailService "github.com/alchemillahq/sylve/internal/services/jail"
 	libvirtService "github.com/alchemillahq/sylve/internal/services/libvirt"
 	lifecycleService "github.com/alchemillahq/sylve/internal/services/lifecycle"
 	networkService "github.com/alchemillahq/sylve/internal/services/network"
+	startupService "github.com/alchemillahq/sylve/internal/services/startup"
 	systemService "github.com/alchemillahq/sylve/internal/services/system"
 	utilitiesService "github.com/alchemillahq/sylve/internal/services/utilities"
 	"github.com/rs/zerolog"
@@ -73,6 +74,7 @@ type consoleIntegrationSuite struct {
 	telemetryDB    *gorm.DB
 	network        *networkService.Service
 	jail           *jailService.Service
+	container      *containerService.Service
 	virtualMachine *libvirtService.Service
 	lifecycle      *lifecycleService.Service
 	utilities      *utilitiesService.Service
@@ -207,9 +209,6 @@ func newConsoleIntegrationSuite() (_ *consoleIntegrationSuite, err error) {
 }
 
 func requireConsoleIntegrationHost() error {
-	if runtime.GOOS != "freebsd" {
-		return fmt.Errorf("must run on FreeBSD, got %s", runtime.GOOS)
-	}
 	if os.Geteuid() != 0 {
 		return errors.New("must run as root; use make test-integration on the dedicated FreeBSD host")
 	}
@@ -401,7 +400,7 @@ func (s *consoleIntegrationSuite) configure() error {
 	s.telemetryDB = database.SetupTelemetryDatabase(cfg, s.database, false)
 	if err := s.database.Create(&models.BasicSettings{
 		Pools:       []string{s.poolName},
-		Services:    []models.AvailableService{models.Jails, models.Virtualization},
+		Services:    []models.AvailableService{models.Jails, models.Virtualization, models.Containers},
 		Initialized: true,
 	}).Error; err != nil {
 		return fmt.Errorf("seed suite basic settings: %w", err)
@@ -418,7 +417,11 @@ func (s *consoleIntegrationSuite) configure() error {
 	s.network = network
 	jail := jailService.NewJailService(s.database, network, system, gzfsClient).(*jailService.Service)
 	s.jail = jail
-	lifecycle := lifecycleService.NewService(s.database, s.telemetryDB, libvirt, jail)
+	if s.container, err = containerService.NewContainerService(s.database, gzfsClient); err != nil {
+		return fmt.Errorf("create suite container service: %w", err)
+	}
+	s.container.PrepareHost = (&startupService.Service{}).PrepareContainerHost
+	lifecycle := lifecycleService.NewService(s.database, s.telemetryDB, libvirt, jail, s.container)
 	s.lifecycle = lifecycle
 	utilities := utilitiesService.NewUtilitiesService(s.database, s.telemetryDB, libvirt, jail).(*utilitiesService.Service)
 	s.utilities = utilities
@@ -442,6 +445,7 @@ func (s *consoleIntegrationSuite) configure() error {
 	s.socket, err = repl.StartSocketServer(&repl.Context{
 		Info:           info,
 		Jail:           jail,
+		Container:      s.container,
 		Lifecycle:      lifecycle,
 		VirtualMachine: libvirt,
 		Network:        network,
@@ -489,6 +493,11 @@ func (s *consoleIntegrationSuite) Close() error {
 		if err := s.utilities.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close suite utilities runtime: %w", err))
 		}
+	}
+	// The pool's podman service keeps its store, mounted under s.root, open.
+	// Left running, it recreates that path when it exits with this process.
+	if s.container != nil {
+		s.container.ReleasePool(s.poolName)
 	}
 	if err := s.destroyOwnedPool(); err != nil {
 		errs = append(errs, err)

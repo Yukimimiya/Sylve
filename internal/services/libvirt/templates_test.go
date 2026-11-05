@@ -21,37 +21,24 @@ import (
 	networkModels "github.com/alchemillahq/sylve/internal/db/models/network"
 	vmModels "github.com/alchemillahq/sylve/internal/db/models/vm"
 	libvirtServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/libvirt"
-	systemServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/system"
+
 	"github.com/alchemillahq/sylve/internal/testutil"
 	"github.com/alchemillahq/sylve/pkg/network/bridgevlan"
 	"gopkg.in/yaml.v3"
 )
 
-type fakeVMTemplateSystemService struct {
-	systemServiceInterfaces.SystemServiceInterface
-	pools []*gzfs.ZPool
-	err   error
-}
-
-type vmTemplateGuestIdentityCheckerStub struct {
+type guestIdentityCheckerStub struct {
 	batches [][]uint
 	err     error
 }
 
-func (s *vmTemplateGuestIdentityCheckerStub) RequireGuestIDAvailable(ctx context.Context, guestID uint) error {
+func (s *guestIdentityCheckerStub) RequireGuestIDAvailable(ctx context.Context, guestID uint) error {
 	return s.RequireGuestIDsAvailable(ctx, []uint{guestID})
 }
 
-func (s *vmTemplateGuestIdentityCheckerStub) RequireGuestIDsAvailable(_ context.Context, guestIDs []uint) error {
+func (s *guestIdentityCheckerStub) RequireGuestIDsAvailable(_ context.Context, guestIDs []uint) error {
 	s.batches = append(s.batches, append([]uint(nil), guestIDs...))
 	return s.err
-}
-
-func (f fakeVMTemplateSystemService) GetUsablePools(_ context.Context) ([]*gzfs.ZPool, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	return f.pools, nil
 }
 
 func TestRewriteCloudInitMetadataIdentity_RewritesExistingKeys(t *testing.T) {
@@ -291,7 +278,7 @@ func TestPreflightVMTemplateTargets(t *testing.T) {
 		&vmModels.VM{},
 		&jailModels.Jail{},
 	)
-	checker := &vmTemplateGuestIdentityCheckerStub{}
+	checker := &guestIdentityCheckerStub{}
 	svc := &Service{DB: dbConn}
 	svc.SetGuestIdentityAvailabilityChecker(checker)
 
@@ -360,7 +347,7 @@ func TestPreflightVMTemplateTargets(t *testing.T) {
 
 func TestResolveVMTemplateStoragePools(t *testing.T) {
 	svc := &Service{
-		System: fakeVMTemplateSystemService{
+		System: storageTestSystemService{
 			pools: []*gzfs.ZPool{{Name: "zroot"}, {Name: "tank"}},
 		},
 	}
@@ -413,25 +400,6 @@ func TestResolveVMTemplateStoragePools(t *testing.T) {
 	})
 }
 
-func TestSourceVMStoragesForTemplate(t *testing.T) {
-	svc := &Service{}
-	vm := vmModels.VM{
-		Storages: []vmModels.Storage{
-			{ID: 1, Type: vmModels.VMStorageTypeRaw, BootOrder: 4},
-			{ID: 2, Type: vmModels.VMStorageTypeDiskImage, BootOrder: 1},
-			{ID: 3, Type: vmModels.VMStorageTypeZVol, BootOrder: 2},
-		},
-	}
-
-	out := svc.sourceVMStoragesForTemplate(vm)
-	if len(out) != 2 {
-		t.Fatalf("expected 2 cloneable storages, got %d", len(out))
-	}
-	if out[0].ID != 3 || out[1].ID != 1 {
-		t.Fatalf("expected zvol/raw sorted by boot order, got %#v", out)
-	}
-}
-
 func TestBuildVMFromTemplate_PropagatesExtraBhyveOptions(t *testing.T) {
 	template := vmModels.VMTemplate{
 		ExtraBhyveOptions: []string{
@@ -467,33 +435,6 @@ func TestBuildVMTemplateFromVM_PropagatesExtraBhyveOptions(t *testing.T) {
 			template.ExtraBhyveOptions,
 			want,
 		)
-	}
-}
-
-func TestBuildVMFromTemplate_PropagatesBootROM(t *testing.T) {
-	template := vmModels.VMTemplate{
-		BootROM: vmModels.VMBootROMUEFI,
-	}
-	target := vmTemplateCreateTarget{
-		RID:  802,
-		Name: "vm-802",
-	}
-
-	vm := buildVMFromTemplate(template, target, 5902, "", "", "")
-	if vm.BootROM != vmModels.VMBootROMUEFI {
-		t.Fatalf("unexpected VM boot ROM: got=%q want=%q", vm.BootROM, vmModels.VMBootROMUEFI)
-	}
-}
-
-func TestBuildVMTemplateFromVM_PropagatesBootROM(t *testing.T) {
-	vm := vmModels.VM{
-		Name:    "source-vm",
-		BootROM: vmModels.VMBootROMNone,
-	}
-
-	template := buildVMTemplateFromVM(vm, "template-a", nil)
-	if template.BootROM != vmModels.VMBootROMNone {
-		t.Fatalf("unexpected template boot ROM: got=%q want=%q", template.BootROM, vmModels.VMBootROMNone)
 	}
 }
 

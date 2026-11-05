@@ -18,6 +18,7 @@ import (
 
 	"github.com/alchemillahq/sylve/internal/cmd"
 	clusterModels "github.com/alchemillahq/sylve/internal/db/models/cluster"
+	containerModels "github.com/alchemillahq/sylve/internal/db/models/container"
 	"github.com/alchemillahq/sylve/internal/testutil"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
@@ -25,6 +26,7 @@ import (
 )
 
 func newClusterServiceTestDB(t *testing.T, migrateModels ...any) *gorm.DB {
+	t.Helper()
 	migrateModels = append(
 		migrateModels,
 		&clusterModels.BackupJobOperation{},
@@ -37,7 +39,11 @@ func newClusterServiceTestDB(t *testing.T, migrateModels ...any) *gorm.DB {
 		&clusterModels.BackupTargetSSHHostTrust{},
 		&clusterModels.ClusterOption{},
 	)
-	return testutil.NewSQLiteTestDB(t, migrateModels...)
+	db := testutil.NewSQLiteTestDB(t, migrateModels...)
+	if err := containerModels.Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	return db
 }
 
 func seedBackupTargetHostTrust(t *testing.T, database *gorm.DB, target *clusterModels.BackupTarget, keys ...string) {
@@ -128,9 +134,8 @@ func newClusterRaftTestNode(t *testing.T, id string, migrateModels ...any) *clus
 		addr:      addr,
 		transport: transport,
 		raft:      r,
-		service: &Service{
+		service: withRaft(&Service{
 			DB:           db,
-			Raft:         r,
 			NodeID:       id,
 			raftFSM:      fsm,
 			stateFSM:     fsm,
@@ -141,12 +146,17 @@ func newClusterRaftTestNode(t *testing.T, id string, migrateModels ...any) *clus
 			backupTargetValidator: func(context.Context, *clusterModels.BackupTarget) error {
 				return nil
 			},
-		},
+		}, r),
 	}
 	t.Cleanup(func() {
 		cleanupClusterRaftTestNodes(t, []*clusterRaftTestNode{node})
 	})
 	return node
+}
+
+func withRaft(s *Service, r *raft.Raft) *Service {
+	s.SetRaft(r)
+	return s
 }
 
 func connectClusterRaftTestNodes(nodes []*clusterRaftTestNode) {
@@ -322,4 +332,72 @@ func cleanupClusterRaftTestNodes(t *testing.T, nodes []*clusterRaftTestNode) {
 			}
 		}
 	}
+}
+
+// Shorthands the tests use; production code calls the underlying functions.
+
+func (s *Service) ResyncClusterState() error {
+	_, err := s.ResyncClusterStateWithResult(context.Background())
+	return err
+}
+
+func (s *Service) ClearClusteredData() error {
+	return s.clearClusteredData()
+}
+
+func (s *Service) MarkDeclustered() error {
+	err := s.DB.Transaction(markDeclusteredTx)
+	if err == nil {
+		s.joinComplete.Store(false)
+	}
+	return err
+}
+
+func validateJoinMembership(
+	configuration raft.Configuration,
+	localNodeID, joiningNodeID string,
+	joiningAddress raft.ServerAddress,
+) (bool, error) {
+	server, err := resolveJoinMembership(configuration, localNodeID, joiningNodeID, joiningAddress)
+	if err != nil {
+		return false, err
+	}
+	return server != nil && server.Suffrage == raft.Voter, nil
+}
+
+func (s *Service) finalizeStagedJoin(
+	ctx context.Context,
+	nodeID, nodeIP, providedKey string,
+	submitted GuestIdentityInventoryReport,
+) error {
+	return s.finalizeStagedJoinWithVersionCheck(ctx, nodeID, nodeIP, providedKey, submitted, nil)
+}
+
+func (s *Service) LeaveCluster(ctx context.Context) (ClusterLeaveResult, error) {
+	return s.LeaveClusterWithGuests(ctx, nil)
+}
+
+func (s *Service) transferLeadershipForLeave(
+	ctx context.Context,
+	configuration raft.Configuration,
+	localNodeID string,
+) (string, error) {
+	return s.transferLeadershipForLeaveWithGuests(ctx, configuration, localNodeID, false)
+}
+
+func CanNodeStartProtectedGuestForTransition(
+	db *gorm.DB,
+	guestType string,
+	guestID uint,
+	localNodeID string,
+	transitionRunID string,
+) (bool, error) {
+	return CanNodeMutateProtectedGuestForTransition(db, guestType, guestID, localNodeID, transitionRunID)
+}
+
+func (s *Service) joinVersionWarningReason(nodeID string) (string, bool) {
+	s.joinVersionWarnMu.Lock()
+	defer s.joinVersionWarnMu.Unlock()
+	reason, ok := s.joinVersionWarnings[strings.TrimSpace(nodeID)]
+	return reason, ok
 }

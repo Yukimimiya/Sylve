@@ -19,11 +19,13 @@ import (
 	"github.com/alchemillahq/gzfs"
 	"github.com/alchemillahq/sylve/internal/db"
 	"github.com/alchemillahq/sylve/internal/db/models"
+	containerModels "github.com/alchemillahq/sylve/internal/db/models/container"
 	infoModels "github.com/alchemillahq/sylve/internal/db/models/info"
+	jailModels "github.com/alchemillahq/sylve/internal/db/models/jail"
 	zfsModels "github.com/alchemillahq/sylve/internal/db/models/zfs"
 	zfsServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/zfs"
-	"github.com/alchemillahq/sylve/internal/zfsutil"
 	"github.com/alchemillahq/sylve/pkg/disk"
+	storagezfs "github.com/alchemillahq/sylve/pkg/storage/zfs"
 	"github.com/alchemillahq/sylve/pkg/utils"
 	"gorm.io/gorm"
 )
@@ -158,7 +160,11 @@ func (s *Service) CreatePool(ctx context.Context, req zfsServiceInterfaces.Creat
 	}
 	defer release()
 
-	releaseTopology, err := s.guardStorageTopologyMutation(ctx)
+	effectiveMountpoint := mountpoint
+	if effectiveMountpoint == "" {
+		effectiveMountpoint = "/" + req.Name
+	}
+	releaseTopology, err := s.guardStorageTopologyMutation(ctx, &gzfs.Dataset{Name: req.Name, Mountpoint: effectiveMountpoint})
 	if err != nil {
 		return err
 	}
@@ -172,7 +178,7 @@ func (s *Service) CreatePool(ctx context.Context, req zfsServiceInterfaces.Creat
 		return fmt.Errorf("zpool_create_failed: %v", err)
 	}
 
-	_, err = zfsutil.EnsureSylveNamespace(ctx, s.GZFS, req.Name)
+	_, err = storagezfs.EnsureSylveNamespace(ctx, s.GZFS, req.Name)
 	if err != nil {
 		return fmt.Errorf("failed_to_prepare_sylve_datasets: %w", err)
 	}
@@ -213,7 +219,7 @@ func normalizePoolMountpoint(raw string, properties map[string]string) (string, 
 		return "", nil
 	}
 
-	mountpoint, err := zfsutil.NormalizeMountpoint(raw)
+	mountpoint, err := storagezfs.NormalizeMountpoint(raw)
 	if err != nil {
 		return "", classifyError(ErrInvalidRequest, "invalid_pool_mountpoint")
 	}
@@ -236,6 +242,22 @@ func (s *Service) EditPool(ctx context.Context, guid string, props map[string]st
 	return s.withPoolScrubMutation(ctx, guid, func(ctx context.Context) error {
 		return s.editPool(ctx, guid, props, spares)
 	})
+}
+
+func (s *Service) guardPoolStorageMutation(ctx context.Context, pool *gzfs.ZPool) (func(), error) {
+	releaseDownload, err := s.guardDownloadStorageMutation(ctx, pool.Name)
+	if err != nil {
+		return nil, err
+	}
+	releaseTopology, err := s.guardStorageTopologyMutation(ctx, &gzfs.Dataset{Name: pool.Name})
+	if err != nil {
+		releaseDownload()
+		return nil, err
+	}
+	return func() {
+		releaseTopology()
+		releaseDownload()
+	}, nil
 }
 
 func (s *Service) editPool(ctx context.Context, guid string, props map[string]string, spares *[]string) error {
@@ -268,6 +290,16 @@ func (s *Service) editPool(ctx context.Context, guid string, props map[string]st
 	pool, err := s.GZFS.Zpool.GetByGUID(ctx, guid)
 	if err != nil || pool == nil {
 		return poolLookupError(err, "pool_not_found")
+	}
+	if pool.PoolGUID != guid {
+		return classifyError(ErrConflict, "pool_identity_changed")
+	}
+	if len(props) > 0 {
+		release, err := s.guardPoolStorageMutation(ctx, pool)
+		if err != nil {
+			return err
+		}
+		defer release()
 	}
 
 	if len(requestedSpares) > 0 {
@@ -366,11 +398,25 @@ func (s *Service) deletePool(ctx context.Context, guid string) error {
 	if err != nil || pool == nil {
 		return poolLookupError(err, "pool_not_found")
 	}
-	release, err := s.guardDownloadStorageMutation(ctx, pool.Name)
+	if pool.PoolGUID != guid {
+		return classifyError(ErrConflict, "pool_identity_changed")
+	}
+	release, err := s.guardPoolStorageMutation(ctx, pool)
 	if err != nil {
 		return err
 	}
 	defer release()
+
+	var jails, containers int64
+	if err := s.DB.WithContext(ctx).Model(&jailModels.Storage{}).Where("pool = ?", pool.Name).Count(&jails).Error; err != nil {
+		return err
+	}
+	if err := s.DB.WithContext(ctx).Model(&containerModels.Container{}).Where("pool = ?", pool.Name).Count(&containers).Error; err != nil {
+		return err
+	}
+	if jails+containers > 0 {
+		return classifyError(ErrConflict, "pool %s has jails or containers and cannot be deleted", pool.Name)
+	}
 
 	datasets, err := pool.Datasets(ctx, gzfs.DatasetTypeAll)
 	if err != nil {
@@ -387,11 +433,9 @@ func (s *Service) deletePool(ctx context.Context, guid string) error {
 		}
 	}
 
-	releaseTopology, err := s.guardStorageTopologyMutation(ctx)
-	if err != nil {
-		return err
+	if s.ReleasePool != nil {
+		s.ReleasePool(pool.Name)
 	}
-	defer releaseTopology()
 	err = pool.Destroy(ctx)
 
 	if err != nil {
@@ -458,40 +502,6 @@ func (s *Service) ReplaceDevice(ctx context.Context, guid, old, latest string) e
 
 		return nil
 	})
-}
-
-func (s *Service) GetZpoolHistoricalStats(intervalMinutes int, limit int) (map[string][]zfsServiceInterfaces.PoolStatPoint, int, error) {
-	if intervalMinutes <= 0 || intervalMinutes > 525600 {
-		return nil, 0, fmt.Errorf("invalid_interval: must be between 1 and 525600 minutes")
-	}
-	if limit < 0 || limit > 10000 {
-		return nil, 0, fmt.Errorf("invalid_limit: must be between 0 and 10000")
-	}
-	if s.TelemetryDB == nil {
-		return nil, 0, fmt.Errorf("telemetry_database_unavailable")
-	}
-
-	var records []infoModels.ZPoolHistorical
-	if err := s.TelemetryDB.Order("guid ASC, created_at ASC").Find(&records).Error; err != nil {
-		return nil, 0, fmt.Errorf("load_zpool_history: %w", err)
-	}
-
-	series := downsamplePoolRows(records, time.Duration(intervalMinutes)*time.Minute)
-	result := make(map[string][]zfsServiceInterfaces.PoolStatPoint, len(series))
-	for _, history := range series {
-		points := history.Points
-		if limit > 0 && len(points) > limit {
-			points = points[len(points)-limit:]
-		}
-		// A destroyed pool can briefly overlap a newly-created pool with the
-		// same name until the cleanup cron runs. Expose the newest identity.
-		existing := result[history.Name]
-		if len(existing) == 0 || (len(points) > 0 && points[len(points)-1].Time > existing[len(existing)-1].Time) {
-			result[history.Name] = points
-		}
-	}
-
-	return result, len(records), nil
 }
 
 func (s *Service) DetachDevice(ctx context.Context, guid, device string) error {
