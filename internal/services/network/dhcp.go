@@ -448,29 +448,18 @@ func renderDHCPConfig(db *gorm.DB) ([]byte, error) {
 	for _, iface := range interfaces {
 		fmt.Fprintf(&config, "interface=%s\n", iface)
 	}
-	if len(interfaces) > 0 {
-		config.WriteString("bind-interfaces\n\n")
-	}
-	fmt.Fprintf(&config, "except-interface=%s*\n", managedContainerBridgePrefix)
-	// quick hack -- my local condfig
-	config.WriteString("bogus-priv\n")
-	config.WriteString("strict-order\n")
-	config.WriteString("no-resolv\n")
-	config.WriteString("domain-needed\n\n")
 	config.WriteString("bind-interfaces\n")
+	fmt.Fprintf(&config, "except-interface=%s*\n", managedContainerBridgePrefix)
 	config.WriteString("\n")
 
 	for _, dns := range current.DNSServers {
 		fmt.Fprintf(&config, "server=%s\n", dns)
 	}
-	// quick hack -- my local condfig, add tailscale dns server
-	config.WriteString("server=/ts.net/100.100.100.100\n")
 	if len(current.DNSServers) > 0 {
 		config.WriteString("\n")
 	}
 	if current.Domain != "" {
-		fmt.Fprintf(&config, "domain=%s\n", current.Domain)
-		fmt.Fprintf(&config, "local=/%s/\n\n", current.Domain) // quick hack -- my local config
+		fmt.Fprintf(&config, "domain=%s\n\n", current.Domain)
 	}
 	if current.ExpandHosts {
 		config.WriteString("expand-hosts\n\n")
@@ -516,10 +505,6 @@ func renderDHCPConfig(db *gorm.DB) ([]byte, error) {
 		}
 	}
 	config.WriteString("\n")
-	// quick hack -- my local config, add dhcp options
-	config.WriteString("dhcp-option=option:router,10.0.1.1\n")
-	config.WriteString("dhcp-option=option6:dns-server,[::],[2409:13:c040:7200:5a9c:fcff:fe10:cc95]\n\n")
-	config.WriteString("conf-dir=/usr/local/etc/dnsmasq.d,*.conf\n\n")
 
 	var leases []networkModels.DHCPStaticLease
 	if err := db.
