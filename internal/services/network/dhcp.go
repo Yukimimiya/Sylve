@@ -455,12 +455,20 @@ func renderDHCPConfig(db *gorm.DB) ([]byte, error) {
 	for _, dns := range current.DNSServers {
 		fmt.Fprintf(&config, "server=%s\n", dns)
 	}
+	//quick hack to add Tailscale DNS server
+	config.WriteString("server=/ts.net/100.100.100.100\n")
 	if len(current.DNSServers) > 0 {
 		config.WriteString("\n")
 	}
 	if current.Domain != "" {
 		fmt.Fprintf(&config, "domain=%s\n\n", current.Domain)
 	}
+	// quick hack to add local configs
+	fmt.Fprintf(&config, "local=/%s/\n\n", current.Domain)
+	config.WriteString("dhcp-option=option:router,10.0.1.1\n")
+	config.WriteString("dhcp-option=option:dns-server,10.0.1.16,10.0.1.9\n")
+	fmt.Fprintf(&config, "dhcp-option=option:domain-search,%s\n\n", current.Domain)
+	fmt.Fprintf(&config, "dhcp-option=option:domain-name,%s\n\n", current.Domain)
 	if current.ExpandHosts {
 		config.WriteString("expand-hosts\n\n")
 	}
