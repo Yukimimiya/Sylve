@@ -463,17 +463,17 @@ func renderDHCPConfig(db *gorm.DB) ([]byte, error) {
 		config.WriteString("\n")
 	}
 	if current.Domain != "" {
-		fmt.Fprintf(&config, "domain=%s\n\n", current.Domain)
+		fmt.Fprintf(&config, "domain=%s\n", current.Domain) // quick hack
+	}
+	if current.ExpandHosts {
+		config.WriteString("expand-hosts\n\n")
 	}
 	// quick hack to add local configs
 	fmt.Fprintf(&config, "local=/%s/\n\n", current.Domain)
 	config.WriteString("dhcp-option=option:router,10.0.1.1\n")
 	config.WriteString("dhcp-option=option:dns-server,10.0.1.16,10.0.1.9\n")
-	fmt.Fprintf(&config, "dhcp-option=option:domain-search,%s\n\n", current.Domain)
+	fmt.Fprintf(&config, "dhcp-option=option:domain-search,%s\n", current.Domain)
 	fmt.Fprintf(&config, "dhcp-option=option:domain-name,%s\n\n", current.Domain)
-	if current.ExpandHosts {
-		config.WriteString("expand-hosts\n\n")
-	}
 
 	var ranges []networkModels.DHCPRange
 	if err := db.Preload("StandardSwitch").Preload("ManualSwitch").Find(&ranges).Error; err != nil {
