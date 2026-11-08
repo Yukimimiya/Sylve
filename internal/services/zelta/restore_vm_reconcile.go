@@ -93,14 +93,21 @@ func normalizeRestoredVMBootROM(value vmModels.VMBootROM) vmModels.VMBootROM {
 }
 
 func (s *Service) reconcileRestoredVMFromDatasetWithOptions(ctx context.Context, dataset string, restoreNetwork bool) error {
-	return s.reconcileRestoredVMFromDataset(ctx, dataset, "", restoreNetwork, false, false)
+	return s.reconcileRestoredVMFromDataset(ctx, dataset, "", restoreNetwork, false, false, false)
+}
+
+// reconcileMigratedVMFromDataset imports a VM received by migration. The
+// replication stream carries every snapshot in vm.json, so the user's own
+// snapshot records are kept alongside the backup ones.
+func (s *Service) reconcileMigratedVMFromDataset(ctx context.Context, dataset string) error {
+	return s.reconcileRestoredVMFromDataset(ctx, dataset, "", true, false, false, true)
 }
 
 // reconcileRestoredVMFromDatasetForOwnerRecovery rebuilds a registration that
 // was retired on the active owner. Its caller has already proven the owner
 // lease, so the restored storage rows are not a user topology change.
 func (s *Service) reconcileRestoredVMFromDatasetForOwnerRecovery(ctx context.Context, dataset string) error {
-	return s.reconcileRestoredVMFromDataset(ctx, dataset, "", true, false, true)
+	return s.reconcileRestoredVMFromDataset(ctx, dataset, "", true, false, true, false)
 }
 
 func (s *Service) reconcileRestoredVMFromDatasetAsNew(
@@ -108,7 +115,7 @@ func (s *Service) reconcileRestoredVMFromDatasetAsNew(
 	dataset, sourcePrimaryRoot string,
 	restoreNetwork bool,
 ) error {
-	return s.reconcileRestoredVMFromDataset(ctx, dataset, sourcePrimaryRoot, restoreNetwork, true, false)
+	return s.reconcileRestoredVMFromDataset(ctx, dataset, sourcePrimaryRoot, restoreNetwork, true, false, false)
 }
 
 func (s *Service) reconcileRestoredVMFromDataset(
@@ -117,6 +124,7 @@ func (s *Service) reconcileRestoredVMFromDataset(
 	restoreNetwork bool,
 	strictAsNew bool,
 	recoverOwnerRegistration bool,
+	keepGuestSnapshots bool,
 ) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -263,7 +271,7 @@ func (s *Service) reconcileRestoredVMFromDataset(
 			CloudInitData:          restored.CloudInitData,
 			CloudInitMetaData:      restored.CloudInitMetaData,
 			CloudInitNetworkConfig: restored.CloudInitNetworkConfig,
-			ExtraBhyveOptions:      append([]string(nil), restored.ExtraBhyveOptions...),
+			ExtraBhyveOptions:      append([]string{}, restored.ExtraBhyveOptions...),
 			IgnoreUMSR:             restored.IgnoreUMSR,
 			QemuGuestAgent:         restored.QemuGuestAgent,
 		}
@@ -381,6 +389,7 @@ func (s *Service) reconcileRestoredVMFromDataset(
 			restoredMeta.Snapshots,
 			normalizedStorages,
 			dataset,
+			keepGuestSnapshots,
 		); err != nil {
 			return err
 		}
@@ -397,6 +406,13 @@ func (s *Service) reconcileRestoredVMFromDataset(
 	}
 
 	if s.VM != nil {
+		// CreateLvVm starts from template UEFI vars and copies them over the
+		// ones in the dataset, so read the guest's files before it runs.
+		artifacts, err := s.readVMRuntimeArtifactsFromDataset(ctx, dataset, sourceRID, rid)
+		if err != nil {
+			return fmt.Errorf("failed_to_read_vm_runtime_artifacts: %w", err)
+		}
+
 		if !strictAsNew {
 			if err := s.VM.RemoveLvVm(rid); err != nil {
 				logger.L.Warn().
@@ -460,7 +476,7 @@ func (s *Service) reconcileRestoredVMFromDataset(
 			return fmt.Errorf("failed_to_rebuild_restored_vm_domain: %w", err)
 		}
 
-		if err := s.restoreVMRuntimeArtifactsFromDataset(ctx, dataset, sourceRID, rid); err != nil {
+		if err := writeVMRuntimeArtifacts(rid, artifacts); err != nil {
 			return fmt.Errorf("failed_to_restore_vm_runtime_artifacts: %w", err)
 		}
 
@@ -869,6 +885,7 @@ func reconcileRestoredVMSnapshots(
 	snapshots []vmModels.VMSnapshot,
 	storages []vmModels.Storage,
 	destinationDataset string,
+	keepGuestSnapshots bool,
 ) error {
 	if tx == nil || vmID == 0 || rid == 0 {
 		return nil
@@ -903,7 +920,7 @@ func reconcileRestoredVMSnapshots(
 			continue
 		}
 
-		if !isBackupSnapshotShortName(snapshotName) {
+		if !keepGuestSnapshots && !isBackupSnapshotShortName(snapshotName) {
 			continue
 		}
 
@@ -916,13 +933,19 @@ func reconcileRestoredVMSnapshots(
 			name = snapshotName
 		}
 
+		// A guest snapshot covers only the roots that existed when it was taken.
+		recordRoots := roots
+		if keepGuestSnapshots && len(snapshot.RootDatasets) > 0 {
+			recordRoots = snapshot.RootDatasets
+		}
+
 		record := vmModels.VMSnapshot{
 			VMID:         vmID,
 			RID:          rid,
 			Name:         name,
 			Description:  strings.TrimSpace(snapshot.Description),
 			SnapshotName: snapshotName,
-			RootDatasets: append([]string(nil), roots...),
+			RootDatasets: append([]string(nil), recordRoots...),
 		}
 		if !snapshot.CreatedAt.IsZero() {
 			record.CreatedAt = snapshot.CreatedAt
@@ -1073,17 +1096,44 @@ func vmRuntimeArtifactNames(sourceRID, destinationRID uint) []vmRuntimeArtifactN
 	}
 }
 
-func (s *Service) restoreVMRuntimeArtifactsFromDataset(
+type vmRuntimeArtifact struct {
+	Name string
+	Data []byte
+}
+
+func (s *Service) readVMRuntimeArtifactsFromDataset(
 	ctx context.Context,
 	dataset string,
 	sourceRID, destinationRID uint,
-) error {
-	if destinationRID == 0 {
-		return nil
-	}
-
+) ([]vmRuntimeArtifact, error) {
 	candidates := vmMetadataCandidateDatasets(dataset)
-	if len(candidates) == 0 {
+	var artifacts []vmRuntimeArtifact
+	for _, artifactName := range vmRuntimeArtifactNames(sourceRID, destinationRID) {
+		relativePath := filepath.Join(".sylve", artifactName.Source)
+		found := false
+		for _, candidate := range candidates {
+			data, ok, err := s.readLocalDatasetMetadataBytes(ctx, candidate, relativePath)
+			if err != nil {
+				return nil, fmt.Errorf("failed_to_read_vm_artifact_%s_from_%s: %w", artifactName.Source, candidate, err)
+			}
+			if ok {
+				artifacts = append(artifacts, vmRuntimeArtifact{Name: artifactName.Destination, Data: data})
+				found = true
+				break
+			}
+		}
+		if !found {
+			logger.L.Debug().
+				Uint("rid", destinationRID).
+				Str("artifact", artifactName.Source).
+				Msg("restored_vm_artifact_not_found_in_dataset_metadata")
+		}
+	}
+	return artifacts, nil
+}
+
+func writeVMRuntimeArtifacts(rid uint, artifacts []vmRuntimeArtifact) error {
+	if len(artifacts) == 0 {
 		return nil
 	}
 
@@ -1091,53 +1141,19 @@ func (s *Service) restoreVMRuntimeArtifactsFromDataset(
 	if err != nil {
 		return fmt.Errorf("failed_to_get_vms_path: %w", err)
 	}
-
-	configDir := filepath.Join(vmDir, strconv.Itoa(int(destinationRID)))
+	configDir := filepath.Join(vmDir, strconv.Itoa(int(rid)))
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("failed_to_create_vm_config_dir: %w", err)
 	}
 
-	artifactNames := vmRuntimeArtifactNames(sourceRID, destinationRID)
-
-	copied := make([]string, 0, len(artifactNames))
-	for _, artifactName := range artifactNames {
-		relativePath := filepath.Join(".sylve", artifactName.Source)
-		artifactCopied := false
-
-		for _, candidate := range candidates {
-			data, found, readErr := s.readLocalDatasetMetadataBytes(ctx, candidate, relativePath)
-			if readErr != nil {
-				return fmt.Errorf("failed_to_read_vm_artifact_%s_from_%s: %w", artifactName.Source, candidate, readErr)
-			}
-			if !found {
-				continue
-			}
-
-			dstPath := filepath.Join(configDir, artifactName.Destination)
-			if err := os.WriteFile(dstPath, data, 0644); err != nil {
-				return fmt.Errorf("failed_to_write_vm_artifact_%s: %w", artifactName.Destination, err)
-			}
-
-			artifactCopied = true
-			copied = append(copied, artifactName.Destination)
-			break
+	names := make([]string, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if err := os.WriteFile(filepath.Join(configDir, artifact.Name), artifact.Data, 0644); err != nil {
+			return fmt.Errorf("failed_to_write_vm_artifact_%s: %w", artifact.Name, err)
 		}
-
-		if !artifactCopied {
-			logger.L.Debug().
-				Uint("rid", destinationRID).
-				Str("artifact", artifactName.Source).
-				Msg("restored_vm_artifact_not_found_in_dataset_metadata")
-		}
+		names = append(names, artifact.Name)
 	}
-
-	if len(copied) > 0 {
-		logger.L.Info().
-			Uint("rid", destinationRID).
-			Strs("artifacts", copied).
-			Msg("restored_vm_runtime_artifacts")
-	}
-
+	logger.L.Info().Uint("rid", rid).Strs("artifacts", names).Msg("restored_vm_runtime_artifacts")
 	return nil
 }
 
@@ -1146,22 +1162,20 @@ func (s *Service) readLocalDatasetMetadataBytes(
 	dataset string,
 	relativeMetaPath string,
 ) ([]byte, bool, error) {
-	mountedOut, err := s.runLocalZFSGet(ctx, "mounted", dataset)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed_to_read_dataset_mounted_property: %w", err)
+	ds, err := s.getLocalDataset(ctx, dataset)
+	if err == nil && ds == nil {
+		err = fmt.Errorf("dataset_not_found: %s", dataset)
 	}
-	mountpointOut, err := s.runLocalZFSGet(ctx, "mountpoint", dataset)
 	if err != nil {
-		return nil, false, fmt.Errorf("failed_to_read_dataset_mountpoint_property: %w", err)
+		return nil, false, fmt.Errorf("failed_to_read_dataset_mount_properties: %w", err)
 	}
 
-	mounted := strings.EqualFold(strings.TrimSpace(mountedOut), "yes")
-	mountPoint := strings.TrimSpace(mountpointOut)
+	mountPoint := strings.TrimSpace(ds.Properties["mountpoint"].Value)
 	if mountPoint == "" || mountPoint == "-" || mountPoint == "none" || mountPoint == "legacy" {
 		return nil, false, nil
 	}
 
-	if !mounted {
+	if !ds.IsMounted() {
 		if err := s.mountLocalDataset(ctx, dataset); err != nil {
 			return nil, false, fmt.Errorf("failed_to_mount_restored_dataset: %w", err)
 		}

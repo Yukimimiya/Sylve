@@ -154,6 +154,7 @@ func RegisterRoutes(r *gin.Engine,
 	{
 		basic.GET("/settings", basicHandlers.GetBasicSettings(systemService))
 		basic.POST("/initialize", requireBasicAdmin, basicHandlers.Initialize(systemService))
+		basic.GET("/initialize/host-state", requireBasicAdmin, basicHandlers.GetInitializeHostState(systemService, networkService))
 		basic.POST("/system/reboot", requireBasicAdmin, basicHandlers.RebootSystem(systemService))
 	}
 
@@ -990,7 +991,7 @@ func RegisterRoutes(r *gin.Engine,
 
 	leaderOnly := clusterHandlers.LeaderOnly(clusterService)
 
-	migrationHandlers.RegisterCalls(clusterService, zeltaService, libvirtService, jailService)
+	migrationHandlers.RegisterCalls(clusterService, zeltaService, libvirtService, jailService, systemService)
 
 	intraCluster := api.Group("/intra-cluster")
 	intraCluster.Use(middleware.EnsureAuthenticated(authService))
@@ -999,6 +1000,7 @@ func RegisterRoutes(r *gin.Engine,
 		intraCluster.POST("/raft/apply", clusterHandlers.ApplyProposalInternal(clusterService))
 		intraCluster.POST("/leader/:name", middleware.LimitRequestBody(authServicePkg.MaxRequestBodyBytes), clusterHandlers.LeaderCallInternal(clusterService))
 		intraCluster.POST("/node/:name", middleware.LimitRequestBody(authServicePkg.MaxRequestBodyBytes), clusterHandlers.NodeCallInternal(clusterService))
+		intraCluster.POST("/stream/:name", clusterHandlers.NodeStreamInternal(clusterService))
 	}
 
 	// Members upgrading from an older Raft format ask each other every few

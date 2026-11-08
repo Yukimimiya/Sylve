@@ -9,12 +9,16 @@
 package zelta
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,7 +27,7 @@ import (
 	clusterModels "github.com/alchemillahq/sylve/internal/db/models/cluster"
 	jailModels "github.com/alchemillahq/sylve/internal/db/models/jail"
 	vmModels "github.com/alchemillahq/sylve/internal/db/models/vm"
-	"github.com/alchemillahq/sylve/internal/logger"
+	jailService "github.com/alchemillahq/sylve/internal/services/jail"
 	"github.com/alchemillahq/sylve/internal/services/libvirt"
 	"github.com/alchemillahq/sylve/pkg/utils"
 )
@@ -47,10 +51,13 @@ func (s *Service) requireLocalGuestIdentityPlacement(
 	return fmt.Errorf("guest_identity_local_placement_invalid: %w", placementErr)
 }
 
+// ImportMigratedVMWithRoots registers a VM whose datasets a migration received
+// into roots. pools maps each source pool to the local pool that replaced it.
 func (s *Service) ImportMigratedVMWithRoots(
 	ctx context.Context,
 	rid uint,
 	roots []string,
+	pools map[string]string,
 ) (warnings []string, err error) {
 	if rid == 0 {
 		return nil, fmt.Errorf("invalid_vm_rid")
@@ -95,6 +102,8 @@ func (s *Service) ImportMigratedVMWithRoots(
 		return nil, err
 	}
 
+	rewrite := len(pools) > 0
+	remapMigratedVMMetadataPools(migratedMetadata, pools)
 	if migratedMetadata.VM.VNCEnabled {
 		requestedPort := migratedMetadata.VM.VNCPort
 		resolvedPort, reassigned, resolveErr := s.resolveMigratedVMVNCPort(rid, requestedPort)
@@ -103,9 +112,7 @@ func (s *Service) ImportMigratedVMWithRoots(
 		}
 		if reassigned {
 			migratedMetadata.VM.VNCPort = resolvedPort
-			if err := s.writeVMMetadataToDataset(ctx, metadataDataset, migratedMetadata); err != nil {
-				return warnings, fmt.Errorf("failed_to_persist_migrated_vm_vnc_port: %w", err)
-			}
+			rewrite = true
 			warnings = append(warnings, fmt.Sprintf(
 				"warning_target_vnc_port_reassigned: %d -> %d",
 				requestedPort,
@@ -113,18 +120,19 @@ func (s *Service) ImportMigratedVMWithRoots(
 			))
 		}
 	}
+	if rewrite {
+		if err := s.writeVMMetadataToDataset(ctx, metadataDataset, migratedMetadata); err != nil {
+			return warnings, fmt.Errorf("failed_to_persist_migrated_vm_metadata: %w", err)
+		}
+	}
 
-	if err := s.reconcileRestoredVMFromDatasetWithOptions(ctx, metadataDataset, true); err != nil {
+	if err := s.reconcileMigratedVMFromDataset(ctx, metadataDataset); err != nil {
 		s.cleanupOrphanedVMRegistration(rid)
 		return warnings, fmt.Errorf("failed_to_import_migrated_vm: %w", err)
 	}
 
 	if err := activateMigratedDatasetRoots(ctx, roots, s.prepareReplicatedDatasetForActivation); err != nil {
 		return warnings, fmt.Errorf("failed_to_prepare_migrated_vm_datasets_for_activation: %w", err)
-	}
-
-	if err := s.destroyMigratedDatasetSnapshots(ctx, roots); err != nil {
-		return warnings, fmt.Errorf("failed_to_cleanup_migrated_vm_snapshots: %w", err)
 	}
 
 	return warnings, nil
@@ -190,9 +198,10 @@ func (s *Service) ImportMigratedJailWithRoots(
 		return nil, err
 	}
 
-	metadataDataset := ""
+	metadataDataset, metadataMountpoint := "", ""
+	var migratedMetadata *restoredJailMetadata
 	for _, dataset := range roots {
-		meta, _, readErr := s.readLocalRestoredJailMetadata(ctx, dataset)
+		meta, mountPoint, readErr := s.readLocalRestoredJailMetadata(ctx, dataset)
 		if readErr != nil {
 			return nil, fmt.Errorf("failed_to_read_migrated_jail_metadata_from_%s: %w", dataset, readErr)
 		}
@@ -203,14 +212,17 @@ func (s *Service) ImportMigratedJailWithRoots(
 			return nil, fmt.Errorf("migrated_jail_metadata_identity_mismatch_on_%s", dataset)
 		}
 		if metadataDataset == "" {
-			metadataDataset = dataset
+			metadataDataset, metadataMountpoint, migratedMetadata = dataset, mountPoint, meta
 		}
 	}
 	if metadataDataset == "" {
 		return nil, fmt.Errorf("migrated_jail_metadata_invalid")
 	}
+	if err := s.rebaseMigratedJailFstab(migratedMetadata, metadataMountpoint); err != nil {
+		return nil, err
+	}
 
-	if err := s.reconcileRestoredJailFromDatasetWithOptions(ctx, metadataDataset, true); err != nil {
+	if err := s.reconcileMigratedJailFromDataset(ctx, metadataDataset); err != nil {
 		return warnings, fmt.Errorf("failed_to_import_migrated_jail: %w", err)
 	}
 
@@ -218,11 +230,175 @@ func (s *Service) ImportMigratedJailWithRoots(
 		return warnings, fmt.Errorf("failed_to_prepare_migrated_jail_datasets_for_activation: %w", err)
 	}
 
-	if err := s.destroyMigratedDatasetSnapshots(ctx, roots); err != nil {
-		return warnings, fmt.Errorf("failed_to_cleanup_migrated_jail_snapshots: %w", err)
+	return warnings, nil
+}
+
+// rebaseMigratedJailFstab moves the jail's fstab mounts to where its root is
+// mounted on this node, which differs when the migration changed its pool.
+func (s *Service) rebaseMigratedJailFstab(meta *restoredJailMetadata, mountPoint string) error {
+	source := meta.RootMountpoint
+	if source == "" || source == mountPoint || strings.TrimSpace(meta.Jail.Fstab) == "" {
+		return nil
+	}
+	fstab, err := jailService.RebaseFstab(meta.Jail.Fstab, source, mountPoint)
+	if err != nil {
+		return fmt.Errorf("failed_to_rebase_migrated_jail_fstab: %w", err)
+	}
+	meta.Jail.Fstab = fstab
+	if err := s.writeJailMetadataToDisk(meta, mountPoint); err != nil {
+		return fmt.Errorf("failed_to_persist_migrated_jail_metadata: %w", err)
+	}
+	return nil
+}
+
+// remapMigratedVMMetadataPools points vm.json at the pools the VM's datasets
+// were received into. Datasets outside the VM's own roots, such as a shared
+// filesystem, did not move and keep their names.
+func remapMigratedVMMetadataPools(meta *restoredVMMetadata, pools map[string]string) {
+	if len(pools) == 0 {
+		return
+	}
+	guestRoot := fmt.Sprintf("/sylve/virtual-machines/%d", meta.VM.RID)
+	remap := func(dataset string) string {
+		pool, rest, _ := strings.Cut(strings.TrimSpace(dataset), "/")
+		rest = "/" + rest
+		target, ok := pools[pool]
+		if !ok || (rest != guestRoot && !strings.HasPrefix(rest, guestRoot+"/")) {
+			return dataset
+		}
+		return target + rest
 	}
 
-	return warnings, nil
+	for i := range meta.VM.Storages {
+		storage := &meta.VM.Storages[i]
+		if storage.Type == vmModels.VMStorageTypeDiskImage {
+			continue
+		}
+		if name := strings.TrimSpace(storage.Dataset.Name); name != "" {
+			if remapped := remap(name); remapped != name {
+				pool, _, _ := strings.Cut(remapped, "/")
+				storage.Dataset.Name = remapped
+				storage.Pool, storage.Dataset.Pool = pool, pool
+			}
+			continue
+		}
+		if target, ok := pools[strings.TrimSpace(storage.Pool)]; ok && storage.Type != vmModels.VMStorageTypeFilesystem {
+			storage.Pool, storage.Dataset.Pool = target, target
+		}
+	}
+	// Roots from pools that were merged into one collapse to that one root.
+	for i := range meta.Snapshots {
+		var roots []string
+		for _, root := range meta.Snapshots[i].RootDatasets {
+			if root = remap(root); !slices.Contains(roots, root) {
+				roots = append(roots, root)
+			}
+		}
+		meta.Snapshots[i].RootDatasets = roots
+	}
+}
+
+// MigrationTargetDataset reports whether dataset exists on this node and which
+// migration snapshots it has, for a migration deciding what to send.
+func (s *Service) MigrationTargetDataset(ctx context.Context, dataset string) (bool, []string, error) {
+	ds, err := s.getLocalDataset(ctx, dataset)
+	if err != nil || ds == nil {
+		return false, nil, err
+	}
+	snapshots, err := s.GZFS.ZFS.ListWithPrefix(ctx, gzfs.DatasetTypeSnapshot, dataset, false)
+	if err != nil {
+		return true, nil, err
+	}
+	var names []string
+	for _, snapshot := range snapshots {
+		name, found := strings.CutPrefix(snapshot.Name, dataset+"@")
+		if found && isGeneratedMigrationSnapshotName(name) {
+			names = append(names, name)
+		}
+	}
+	return true, names, nil
+}
+
+// PrepareMigrationReceive destroys what an earlier attempt left at dataset, so
+// a full stream can be received into it.
+func (s *Service) PrepareMigrationReceive(ctx context.Context, dataset string) error {
+	output, err := utils.RunCommandWithContext(ctx, "zfs", "destroy", "-rf", dataset)
+	if err != nil && !strings.Contains(output+err.Error(), "dataset does not exist") {
+		return fmt.Errorf("migration_target_dataset_destroy_failed: %s: %w", strings.TrimSpace(output), err)
+	}
+	exists, err := s.localDatasetExists(ctx, dataset)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("migration_target_dataset_still_exists: %s", dataset)
+	}
+	return nil
+}
+
+// ReceiveMigrationStream receives a migration's zfs send stream into dataset.
+// The mountpoint isn't received, so the dataset inherits this node's, and it
+// stays unmounted until the import activates it.
+func (s *Service) ReceiveMigrationStream(ctx context.Context, dataset string, stream io.Reader) error {
+	cmd := exec.CommandContext(ctx, "zfs", "recv", "-u", "-x", "mountpoint", "-o", "canmount=noauto", "-F", dataset)
+	cmd.Stdin = stream
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("zfs_recv_failed: %s: %w", strings.TrimSpace(stderr.String()), err)
+	}
+	return nil
+}
+
+// CleanupMigrationSnapshots destroys the migration snapshots under dataset,
+// for a migration that stops before cutover.
+func (s *Service) CleanupMigrationSnapshots(ctx context.Context, dataset string) error {
+	exists, err := s.localDatasetExists(ctx, dataset)
+	if err != nil || !exists {
+		return err
+	}
+	return s.destroyDatasetMigrationSnapshots(ctx, dataset)
+}
+
+// MergeMigratedVMRoots moves the disk datasets a migration staged beside each
+// VM root into that root, then destroys the staging dataset. Disk datasets are
+// named by storage ID, so they can't collide. A retried import finds the
+// staging dataset already gone and skips it.
+func (s *Service) MergeMigratedVMRoots(ctx context.Context, rid uint, staged map[string][]string) error {
+	for root, stagings := range staged {
+		if _, err := s.ValidateMigratedVMRoots(ctx, rid, []string{root}); err != nil {
+			return err
+		}
+		for _, staging := range stagings {
+			if !strings.HasPrefix(staging, root+".merge-") {
+				return fmt.Errorf("migration_merge_staging_invalid: %s", staging)
+			}
+			ds, err := s.getLocalDataset(ctx, staging)
+			if err != nil {
+				return err
+			}
+			if ds == nil {
+				continue
+			}
+			datasets, err := s.GZFS.ZFS.List(ctx, true, staging)
+			if err != nil {
+				return fmt.Errorf("migration_merge_list_%s_failed: %w", staging, err)
+			}
+			for _, child := range datasets {
+				name, found := strings.CutPrefix(child.Name, staging+"/")
+				if !found || strings.Contains(name, "/") || child.Type == gzfs.DatasetTypeSnapshot {
+					continue
+				}
+				if err := s.renameLocalDataset(ctx, child.Name, root+"/"+name); err != nil {
+					return fmt.Errorf("migration_merge_move_%s_failed: %w", child.Name, err)
+				}
+			}
+			if err := s.destroyLocalDataset(ctx, staging, true); err != nil {
+				return fmt.Errorf("migration_merge_cleanup_%s_failed: %w", staging, err)
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Service) ValidateMigratedVMRoots(ctx context.Context, rid uint, roots []string) ([]string, error) {
@@ -351,12 +527,14 @@ func (s *Service) writeJailMetadataToDisk(meta *restoredJailMetadata, mountPoint
 
 	type jailMetadataPayload struct {
 		jailModels.Jail
-		Snapshots []jailModels.JailSnapshot `json:"snapshots"`
+		Snapshots      []jailModels.JailSnapshot `json:"snapshots"`
+		RootMountpoint string                    `json:"rootMountpoint"`
 	}
 
 	payload := jailMetadataPayload{
-		Jail:      meta.Jail,
-		Snapshots: meta.Snapshots,
+		Jail:           meta.Jail,
+		Snapshots:      meta.Snapshots,
+		RootMountpoint: mountPoint,
 	}
 
 	raw, err := json.MarshalIndent(payload, "", "  ")
@@ -375,40 +553,40 @@ func (s *Service) writeJailMetadataToDisk(meta *restoredJailMetadata, mountPoint
 	return nil
 }
 
+// destroyDatasetMigrationSnapshots destroys the migration snapshots in the
+// dataset's tree with one recursive destroy, which costs one txg sync instead
+// of one per snapshot.
 func (s *Service) destroyDatasetMigrationSnapshots(ctx context.Context, dataset string) error {
 	snaps, err := s.GZFS.ZFS.ListWithPrefix(ctx, gzfs.DatasetTypeSnapshot, dataset, true)
 	if err != nil {
 		return err
 	}
 
-	var cleanupErrs []error
+	var names []string
 	for _, snap := range snaps {
-		if snap == nil {
+		if snap == nil || !isGeneratedMigrationSnapshotPath(dataset, snap.Name) {
 			continue
 		}
-		fullName := snap.Name
-		if !isGeneratedMigrationSnapshotPath(dataset, fullName) {
-			continue
-		}
-
-		if destroyErr := snap.Destroy(ctx, false, false); destroyErr != nil {
-			cleanupErrs = append(cleanupErrs, fmt.Errorf("destroy_migration_snapshot_%s_failed: %w", fullName, destroyErr))
-			logger.L.Warn().
-				Str("snapshot", fullName).
-				Err(destroyErr).
-				Msg("failed_to_destroy_target_migration_snapshot")
+		name := snap.Name[strings.LastIndex(snap.Name, "@")+1:]
+		if !slices.Contains(names, name) {
+			names = append(names, name)
 		}
 	}
-
-	return errors.Join(cleanupErrs...)
+	if len(names) == 0 {
+		return nil
+	}
+	if _, err := utils.RunCommandWithContext(ctx, "zfs", "destroy", "-r", dataset+"@"+strings.Join(names, ",")); err != nil {
+		return fmt.Errorf("destroy_migration_snapshots_%s_failed: %w", dataset, err)
+	}
+	return nil
 }
 
-func (s *Service) destroyMigratedDatasetSnapshots(ctx context.Context, roots []string) error {
+// CleanupMigratedSnapshots runs once the migrated guest is in its final state,
+// so the snapshot destroys aren't part of its downtime.
+func (s *Service) CleanupMigratedSnapshots(ctx context.Context, roots []string) error {
 	var cleanupErrs []error
 	for _, dataset := range roots {
-		if err := s.destroyDatasetMigrationSnapshots(ctx, dataset); err != nil {
-			cleanupErrs = append(cleanupErrs, fmt.Errorf("cleanup_migration_snapshots_%s_failed: %w", dataset, err))
-		}
+		cleanupErrs = append(cleanupErrs, s.destroyDatasetMigrationSnapshots(ctx, dataset))
 	}
 	return errors.Join(cleanupErrs...)
 }
@@ -432,7 +610,7 @@ func isGeneratedMigrationSnapshotName(shortName string) bool {
 	if suffix == name {
 		return false
 	}
-	for _, phasePrefix := range []string{"initial-", "final-", "pre-migration-"} {
+	for _, phasePrefix := range []string{"initial-", "catchup-", "final-", "pre-migration-"} {
 		timestamp := strings.TrimPrefix(suffix, phasePrefix)
 		if timestamp == suffix || timestamp == "" {
 			continue

@@ -12,6 +12,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"slices"
 	"strings"
 	"sync"
 
@@ -20,11 +22,13 @@ import (
 	jailModels "github.com/alchemillahq/sylve/internal/db/models/jail"
 	vmModels "github.com/alchemillahq/sylve/internal/db/models/vm"
 	libvirtServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/libvirt"
+	systemServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/system"
 	"github.com/alchemillahq/sylve/internal/logger"
 	networkAttachment "github.com/alchemillahq/sylve/internal/network/attachment"
 	"github.com/alchemillahq/sylve/internal/services/cluster"
 	"github.com/alchemillahq/sylve/internal/services/jail"
 	"github.com/alchemillahq/sylve/internal/services/libvirt"
+	migrationService "github.com/alchemillahq/sylve/internal/services/migration"
 	"github.com/alchemillahq/sylve/internal/services/zelta"
 	"github.com/alchemillahq/sylve/pkg/utils"
 	goLibvirt "github.com/digitalocean/go-libvirt"
@@ -36,27 +40,105 @@ func RegisterCalls(
 	zeltaService *zelta.Service,
 	libvirtService *libvirt.Service,
 	jailService *jail.Service,
+	systemService systemServiceInterfaces.SystemServiceInterface,
 ) {
 	cluster.OnNode(clusterService, "migration-import-vm", targetMigrationImport(vmImportOperations(zeltaService, libvirtService)))
 	cluster.OnNode(clusterService, "migration-import-jail", targetMigrationImport(jailImportOperations(zeltaService, jailService)))
 	cluster.OnNode(clusterService, "migration-check-vm-target", checkVMTarget(libvirtService))
 	cluster.OnNode(clusterService, "migration-check-jail-target", checkJailTarget(jailService))
+	cluster.OnNode(clusterService, "migration-target-pools", targetPools(systemService))
+	cluster.OnNode(clusterService, "migration-target-dataset", targetDataset(zeltaService))
+	cluster.OnNode(clusterService, "migration-target-prepare", writeTargetDataset(zeltaService, zeltaService.PrepareMigrationReceive))
+	cluster.OnNode(clusterService, "migration-target-cleanup", writeTargetDataset(zeltaService, zeltaService.CleanupMigrationSnapshots))
+	cluster.OnNodeStream(clusterService, "migration-target-receive", receiveTargetDataset(zeltaService))
+}
+
+func targetDataset(
+	zeltaService *zelta.Service,
+) func(context.Context, string, migrationService.TargetDatasetRequest) (migrationService.TargetDatasetInfo, error) {
+	return func(ctx context.Context, _ string, req migrationService.TargetDatasetRequest) (migrationService.TargetDatasetInfo, error) {
+		var info migrationService.TargetDatasetInfo
+		if !req.Valid() {
+			return info, fmt.Errorf("migration_target_dataset_invalid: %s", req.Dataset)
+		}
+		var err error
+		info.Exists, info.MigrationSnapshots, err = zeltaService.MigrationTargetDataset(ctx, req.Dataset)
+		return info, err
+	}
+}
+
+func writeTargetDataset(
+	zeltaService *zelta.Service,
+	write func(context.Context, string) error,
+) func(context.Context, string, migrationService.TargetDatasetRequest) (struct{}, error) {
+	return func(ctx context.Context, _ string, req migrationService.TargetDatasetRequest) (struct{}, error) {
+		if err := authorizeTargetDatasetWrite(ctx, zeltaService, req); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, write(ctx, req.Dataset)
+	}
+}
+
+func receiveTargetDataset(
+	zeltaService *zelta.Service,
+) func(context.Context, string, migrationService.TargetDatasetRequest, io.Reader) (struct{}, error) {
+	return func(ctx context.Context, _ string, req migrationService.TargetDatasetRequest, stream io.Reader) (struct{}, error) {
+		if err := authorizeTargetDatasetWrite(ctx, zeltaService, req); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, zeltaService.ReceiveMigrationStream(ctx, req.Dataset, stream)
+	}
+}
+
+// A write to a target dataset is only allowed for a guest root of the guest
+// being migrated, while its migration targets this node.
+func authorizeTargetDatasetWrite(ctx context.Context, zeltaService *zelta.Service, req migrationService.TargetDatasetRequest) error {
+	if !req.Valid() {
+		return fmt.Errorf("migration_target_dataset_invalid: %s", req.Dataset)
+	}
+	return requireMigrationToThisNode(
+		ctx, zeltaService.DB, zeltaService.Cluster.LocalNodeID(), req.GuestType, req.GuestID, req.OperationToken,
+		clusterModels.ReplicationGuestOperationPreCutover, clusterModels.ReplicationGuestOperationCutover,
+	)
+}
+
+// targetPools lists the pools this node lets guests live on, which are the
+// only pools a migration may receive datasets into.
+func targetPools(
+	systemService systemServiceInterfaces.SystemServiceInterface,
+) func(context.Context, string, struct{}) ([]string, error) {
+	return func(ctx context.Context, _ string, _ struct{}) ([]string, error) {
+		pools, err := systemService.GetUsablePools(ctx)
+		if err != nil {
+			return nil, err
+		}
+		names := make([]string, 0, len(pools))
+		for _, pool := range pools {
+			if pool != nil {
+				names = append(names, pool.Name)
+			}
+		}
+		slices.Sort(names)
+		return names, nil
+	}
 }
 
 type targetMigrationImportRequest struct {
-	GuestID            uint     `json:"guestId"`
-	OperationToken     string   `json:"operationToken"`
-	StartGuest         *bool    `json:"startGuest"`
-	SourceDatasetRoots []string `json:"sourceDatasetRoots"`
+	GuestID            uint              `json:"guestId"`
+	OperationToken     string            `json:"operationToken"`
+	StartGuest         *bool             `json:"startGuest"`
+	SourceDatasetRoots []string          `json:"sourceDatasetRoots"`
+	TargetPools        map[string]string `json:"targetPools,omitempty"`
 }
 
 type targetMigrationImportReceipt struct {
-	Message            string   `json:"message"`
-	Warnings           []string `json:"warnings"`
-	GuestID            uint     `json:"guestId"`
-	OperationToken     string   `json:"operationToken"`
-	StartGuest         *bool    `json:"startGuest"`
-	SourceDatasetRoots []string `json:"sourceDatasetRoots"`
+	Message            string            `json:"message"`
+	Warnings           []string          `json:"warnings"`
+	GuestID            uint              `json:"guestId"`
+	OperationToken     string            `json:"operationToken"`
+	StartGuest         *bool             `json:"startGuest"`
+	SourceDatasetRoots []string          `json:"sourceDatasetRoots"`
+	TargetPools        map[string]string `json:"targetPools,omitempty"`
 }
 
 type targetMigrationRuntimeState string
@@ -75,10 +157,14 @@ type targetMigrationImportOperations struct {
 	AlreadyActiveMessage   string
 	Authorize              func(context.Context, uint, string) error
 	ValidateRoots          func(context.Context, uint, []string) ([]string, error)
-	RuntimeState           func(uint) (targetMigrationRuntimeState, error)
-	Import                 func(context.Context, uint, []string) ([]string, error)
-	SetIntentionalStop     func(uint, bool) error
-	Start                  func(context.Context, uint) error
+	// MergeRoots moves datasets received into staging beside a guest root into
+	// that root. Only VMs can span pools, so jails leave it nil.
+	MergeRoots         func(context.Context, uint, map[string][]string) error
+	RuntimeState       func(uint) (targetMigrationRuntimeState, error)
+	Import             func(context.Context, uint, []string, map[string]string) ([]string, error)
+	SetIntentionalStop func(uint, bool) error
+	Start              func(context.Context, uint) error
+	CleanupSnapshots   func(context.Context, []string) error
 }
 
 type targetMigrationGuestLockEntry struct {
@@ -124,6 +210,21 @@ func requireExactMigrationTargetCutover(
 	guestID uint,
 	operationToken string,
 ) error {
+	return requireMigrationToThisNode(ctx, db, localNodeID, guestType, guestID, operationToken,
+		clusterModels.ReplicationGuestOperationCutover)
+}
+
+// requireMigrationToThisNode checks that the guest's migration with this token
+// targets this node and is in one of states.
+func requireMigrationToThisNode(
+	ctx context.Context,
+	db *gorm.DB,
+	localNodeID string,
+	guestType string,
+	guestID uint,
+	operationToken string,
+	states ...string,
+) error {
 	localNodeID = strings.TrimSpace(localNodeID)
 	guestType = strings.ToLower(strings.TrimSpace(guestType))
 	operationToken = strings.TrimSpace(operationToken)
@@ -150,7 +251,7 @@ func requireExactMigrationTargetCutover(
 		return fmt.Errorf("migration_target_cutover_guard_not_applied")
 	}
 	if operation.Operation != clusterModels.ReplicationGuestOperationMigration ||
-		operation.State != clusterModels.ReplicationGuestOperationCutover ||
+		!slices.Contains(states, operation.State) ||
 		strings.TrimSpace(operation.Token) != operationToken ||
 		strings.TrimSpace(operation.TargetNodeID) != localNodeID ||
 		strings.TrimSpace(operation.OwnerNodeID) == "" || operation.TaskID == 0 {
@@ -178,7 +279,8 @@ func targetMigrationImport(
 			return none, fmt.Errorf("guest_id_operation_token_start_state_and_dataset_roots_required")
 		}
 		if ops.UnavailableReason != "" || ops.Authorize == nil || ops.ValidateRoots == nil ||
-			ops.RuntimeState == nil || ops.Import == nil || ops.SetIntentionalStop == nil || ops.Start == nil {
+			ops.RuntimeState == nil || ops.Import == nil || ops.SetIntentionalStop == nil || ops.Start == nil ||
+			ops.CleanupSnapshots == nil {
 			reason := strings.TrimSpace(ops.UnavailableReason)
 			if reason == "" {
 				reason = "migration_target_import_not_configured"
@@ -192,17 +294,45 @@ func targetMigrationImport(
 		if err := ops.Authorize(ctx, req.GuestID, req.OperationToken); err != nil {
 			return none, fmt.Errorf("migration_target_cutover_guard_rejected: %w", err)
 		}
-		roots, err := ops.ValidateRoots(ctx, req.GuestID, req.SourceDatasetRoots)
+		var roots []string
+		staged := make(map[string][]string)
+		for _, target := range migrationService.TargetDatasetRoots(req.SourceDatasetRoots, req.TargetPools) {
+			if target.Receive == target.Root {
+				roots = append(roots, target.Root)
+			} else {
+				staged[target.Root] = append(staged[target.Root], target.Receive)
+			}
+		}
+		if len(staged) > 0 {
+			if ops.MergeRoots == nil {
+				return none, fmt.Errorf("migration_target_merge_not_supported")
+			}
+			if err := ops.MergeRoots(ctx, req.GuestID, staged); err != nil {
+				return none, fmt.Errorf("migration_target_merge_failed: %w", err)
+			}
+		}
+		roots, err := ops.ValidateRoots(ctx, req.GuestID, roots)
 		if err != nil {
 			return none, fmt.Errorf("migration_target_dataset_manifest_rejected: %w", err)
 		}
+		// Every receipt answers a guest in its final state, so the migration
+		// snapshots go here instead of in the import: each destroy waits for a
+		// txg sync, which shouldn't add to the guest's downtime.
 		receipt := func(message string, warnings []string) targetMigrationImportReceipt {
+			if err := ops.CleanupSnapshots(ctx, roots); err != nil {
+				logger.L.Warn().Err(err).
+					Str("guest_type", ops.GuestType).
+					Uint("guest_id", req.GuestID).
+					Msg("migration_target_snapshot_cleanup_failed")
+				warnings = append(warnings, "warning_migration_snapshot_cleanup_failed: "+err.Error())
+			}
 			if warnings == nil {
 				warnings = []string{}
 			}
 			return targetMigrationImportReceipt{
 				Message: message, Warnings: warnings, GuestID: req.GuestID, OperationToken: req.OperationToken,
-				StartGuest: req.StartGuest, SourceDatasetRoots: append([]string(nil), roots...),
+				StartGuest: req.StartGuest, SourceDatasetRoots: append([]string(nil), req.SourceDatasetRoots...),
+				TargetPools: req.TargetPools,
 			}
 		}
 
@@ -218,7 +348,7 @@ func targetMigrationImport(
 			return receipt(ops.AlreadyActiveMessage, nil), nil
 		}
 
-		warnings, err := ops.Import(ctx, req.GuestID, roots)
+		warnings, err := ops.Import(ctx, req.GuestID, roots, req.TargetPools)
 		if err != nil {
 			logger.L.Warn().Err(err).
 				Str("guest_type", ops.GuestType).
@@ -328,7 +458,9 @@ func vmImportOperations(
 			)
 		}
 		ops.ValidateRoots = zeltaService.ValidateMigratedVMRoots
+		ops.MergeRoots = zeltaService.MergeMigratedVMRoots
 		ops.Import = zeltaService.ImportMigratedVMWithRoots
+		ops.CleanupSnapshots = zeltaService.CleanupMigratedSnapshots
 	}
 	if libvirtService == nil {
 		if ops.UnavailableReason == "" {
@@ -383,7 +515,10 @@ func jailImportOperations(
 			)
 		}
 		ops.ValidateRoots = zeltaService.ValidateMigratedJailRoots
-		ops.Import = zeltaService.ImportMigratedJailWithRoots
+		ops.Import = func(ctx context.Context, ctID uint, roots []string, _ map[string]string) ([]string, error) {
+			return zeltaService.ImportMigratedJailWithRoots(ctx, ctID, roots)
+		}
+		ops.CleanupSnapshots = zeltaService.CleanupMigratedSnapshots
 	}
 	if jailService == nil {
 		if ops.UnavailableReason == "" {
@@ -430,10 +565,11 @@ type CheckVMTargetRequest struct {
 
 type CheckVMTargetResult struct {
 	networkAttachment.TargetResult
-	MissingMedia      []string `json:"missingMedia"`
-	VNCPortInUse      bool     `json:"vncPortInUse"`
-	MissingFsDatasets []string `json:"missingFsDatasets"`
-	BootErrors        []string `json:"bootErrors"`
+	MissingMedia           []string `json:"missingMedia"`
+	VNCPortInUse           bool     `json:"vncPortInUse"`
+	MissingFsDatasets      []string `json:"missingFsDatasets"`
+	BootErrors             []string `json:"bootErrors"`
+	VirtualizationDisabled bool     `json:"virtualizationDisabled"`
 }
 
 var validateTargetNetworkAttachments = func(
@@ -461,9 +597,10 @@ func checkVMTarget(
 				MissingSwitches:      []string{},
 				IncompatibleSwitches: []string{},
 			},
-			MissingMedia:      make([]string, 0, len(req.MediaUUIDs)),
-			MissingFsDatasets: make([]string, 0, len(req.FsDatasets)),
-			BootErrors:        []string{},
+			MissingMedia:           make([]string, 0, len(req.MediaUUIDs)),
+			MissingFsDatasets:      make([]string, 0, len(req.FsDatasets)),
+			BootErrors:             []string{},
+			VirtualizationDisabled: !libvirtService.IsVirtualizationEnabled(),
 		}
 		seenMedia := make(map[string]struct{}, len(req.MediaUUIDs))
 		for _, uuid := range req.MediaUUIDs {
