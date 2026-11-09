@@ -42,6 +42,23 @@ type restoreEventSpec struct {
 	TargetEndpoint string
 }
 
+// restoreEventSource records where a restore reads from the way a backup
+// event records where it writes: user@host:dataset, here with @snapshot.
+func restoreEventSource(target *clusterModels.BackupTarget, remoteDataset, snapshot string) string {
+	if endpoint, err := canonicalZeltaSnapshotEndpoint(target, remoteDataset, snapshot); err == nil {
+		return endpoint
+	}
+	return remoteDataset + snapshot
+}
+
+func (s *Service) targetRestoreEventSpec(payload restoreFromTargetPayload) restoreEventSpec {
+	source := payload.RemoteDataset + payload.Snapshot
+	if target, err := s.getRestoreTarget(payload.TargetID); err == nil {
+		source = restoreEventSource(&target, payload.RemoteDataset, payload.Snapshot)
+	}
+	return restoreEventSpec{SourceDataset: source, TargetEndpoint: payload.DestinationDataset}
+}
+
 func withRestoreExecution(ctx context.Context, execution restoreExecution) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -49,12 +66,9 @@ func withRestoreExecution(ctx context.Context, execution restoreExecution) conte
 	return context.WithValue(ctx, restoreExecutionContextKey{}, execution)
 }
 
-func restoreExecutionFromContext(ctx context.Context) (restoreExecution, bool) {
-	if ctx == nil {
-		return restoreExecution{}, false
-	}
-	execution, ok := ctx.Value(restoreExecutionContextKey{}).(restoreExecution)
-	return execution, ok && execution.EventID > 0
+func restoreExecutionFromContext(ctx context.Context) restoreExecution {
+	execution, _ := ctx.Value(restoreExecutionContextKey{}).(restoreExecution)
+	return execution
 }
 
 func backupEventJobIDsEqual(left, right *uint) bool {
@@ -366,32 +380,6 @@ func (s *Service) interruptRestoreEvent(eventID uint, reason string) error {
 	return nil
 }
 
-func (s *Service) finalizeRestoreEvent(event *clusterModels.BackupEvent, runErr error, output string) {
-	if event == nil || event.ID == 0 {
-		return
-	}
-	// Queue-managed operations have one outer finalizer that runs after every
-	// restore-specific defer. Deep helpers must not publish an early terminal
-	// result that could omit a later rollback/restart failure.
-	if event.OperationID != nil && strings.TrimSpace(*event.OperationID) != "" {
-		if strings.TrimSpace(output) != "" && s != nil && s.DB != nil {
-			if updateErr := s.DB.Model(&clusterModels.BackupEvent{}).
-				Where("id = ? AND status IN ?", event.ID, []string{"queued", "running"}).
-				Update("output", output).Error; updateErr != nil {
-				logger.L.Warn().Err(updateErr).Uint("event_id", event.ID).Msg("failed_to_stage_restore_event_output")
-			}
-		}
-		return
-	}
-	if err := s.finalizeRestoreEventByID(event.ID, runErr, output); err != nil {
-		logger.L.Warn().Err(err).Uint("event_id", event.ID).Msg("failed_to_finalize_restore_event")
-		return
-	}
-	if current, err := s.GetLocalBackupEvent(event.ID); err == nil && current != nil {
-		*event = *current
-	}
-}
-
 func (s *Service) restoreOperationState(operationID string) (active bool, completed bool, err error) {
 	if s == nil || s.DB == nil {
 		return false, false, nil
@@ -474,16 +462,14 @@ func (s *Service) ReconcileRestoreObservabilityAfterRestart() error {
 
 	var result error
 	var events []clusterModels.BackupEvent
-	if err := s.DB.Where("mode = ? AND operation_id IS NOT NULL", "restore").
+	// Finished events' audits are settled by the pending-audit pass below.
+	if err := s.DB.Where("mode = ? AND operation_id IS NOT NULL AND status NOT IN ?",
+		"restore", []string{"success", "failed", "interrupted"}).
 		Order("id ASC").Find(&events).Error; err != nil {
 		return err
 	}
 	for i := range events {
 		event := &events[i]
-		if restoreEventTerminal(event.Status) {
-			s.finalizeRestoreAuditForEvent(event)
-			continue
-		}
 		operationID := ""
 		if event.OperationID != nil {
 			operationID = strings.TrimSpace(*event.OperationID)

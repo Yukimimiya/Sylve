@@ -28,7 +28,6 @@ import (
 	"github.com/alchemillahq/sylve/internal/logger"
 	networkAttachment "github.com/alchemillahq/sylve/internal/network/attachment"
 	"github.com/alchemillahq/sylve/internal/services/libvirt"
-	"github.com/alchemillahq/sylve/pkg/network/bridgevlan"
 	"gorm.io/gorm"
 )
 
@@ -36,43 +35,6 @@ var (
 	resolveRestoredVMNetworkAttachment = libvirt.ResolveDesiredTargetVMNetworkAttachment
 	resolveRestoredVMNetworkIdentity   = libvirt.ResolveTargetVMNetworkIdentity
 )
-
-func lockRestoredVMNetworkLifecycle(
-	db *gorm.DB,
-	networks []vmModels.Network,
-) (func(), error) {
-	resolver := networkAttachment.NewResolver(db)
-	bridges := make([]string, 0, len(networks))
-	for idx, network := range networks {
-		expected, err := libvirt.VMNetworkAttachmentFromMetadata(network)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"restored_vm_network_source_attachment_invalid: network=%d: %w",
-				idx+1,
-				err,
-			)
-		}
-		target, err := resolver.ResolveIdentityByName(expected.SwitchType, expected.SwitchName)
-		if err != nil {
-			if errors.Is(err, ErrSwitchNotFound) {
-				return nil, fmt.Errorf(
-					"restored_network_switch_not_found: network=%d: %w",
-					idx+1,
-					err,
-				)
-			}
-			return nil, fmt.Errorf(
-				"restored_vm_network_attachment_incompatible: network=%d: %w",
-				idx+1,
-				err,
-			)
-		}
-		if target.Type == "standard" {
-			bridges = append(bridges, target.Bridge)
-		}
-	}
-	return bridgevlan.LockStandardSwitchLifecycle(bridges...), nil
-}
 
 func normalizeRestoredVMBootROM(value vmModels.VMBootROM) vmModels.VMBootROM {
 	switch strings.TrimSpace(strings.ToLower(string(value))) {
@@ -91,6 +53,8 @@ func normalizeRestoredVMBootROM(value vmModels.VMBootROM) vmModels.VMBootROM {
 		return vmModels.VMBootROMUEFI
 	}
 }
+
+var errRestoredVMApplied = errors.New("restored_vm_applied")
 
 func (s *Service) reconcileRestoredVMFromDatasetWithOptions(ctx context.Context, dataset string, restoreNetwork bool) error {
 	return s.reconcileRestoredVMFromDataset(ctx, dataset, "", restoreNetwork, false, false, false)
@@ -195,18 +159,14 @@ func (s *Service) reconcileRestoredVMFromDataset(
 	}
 	restored.BootROM = normalizeRestoredVMBootROM(restored.BootROM)
 
-	restored.ID = 0
-	restored.CreatedAt = restored.CreatedAt.UTC().AddDate(-1000, 0, 0)
-	restored.UpdatedAt = restored.UpdatedAt.UTC().AddDate(-1000, 0, 0)
-	restored.State = 0
-	restored.StartedAt = nil
-	restored.StoppedAt = nil
 	restored.CPUPinning = []vmModels.VMCPUPinning{}
 	restored.PCIDevices = []int{}
 
 	var unlockNetworkLifecycle func()
 	if restoreNetwork {
-		unlockNetworkLifecycle, err = lockRestoredVMNetworkLifecycle(s.DB, restored.Networks)
+		unlockNetworkLifecycle, err = lockRestoredNetworkLifecycle(
+			s.DB, "vm", restored.Networks, libvirt.VMNetworkAttachmentFromMetadata,
+		)
 		if err != nil {
 			return err
 		}
@@ -284,6 +244,9 @@ func (s *Service) reconcileRestoredVMFromDataset(
 			} else {
 				return fmt.Errorf("failed_to_lookup_existing_vm_by_rid: %w", err)
 			}
+		}
+		if baseVM.Name, err = uniqueRestoredGuestName(tx, &vmModels.VM{}, baseVM.Name, existing.ID); err != nil {
+			return err
 		}
 
 		if existingFound {
@@ -399,6 +362,12 @@ func (s *Service) reconcileRestoredVMFromDataset(
 	if err != nil {
 		return err
 	}
+	// The DB now describes the restored disks; callers must not roll them back.
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("%w: %w", errRestoredVMApplied, err)
+		}
+	}()
 
 	if unlockNetworkLifecycle != nil {
 		unlockNetworkLifecycle()

@@ -36,6 +36,7 @@ type packageAdmission struct {
 	ordinary  int
 	operation string
 	cancel    context.CancelCauseFunc
+	cancelled bool
 }
 type packageOwnerKey struct{}
 
@@ -45,7 +46,6 @@ type packageRuntime struct {
 	telemetry *gorm.DB
 	request   PackageTaskRequester
 	dataPath  string
-	slots     chan struct{}
 	resolve   func(context.Context, *jailModels.Jail) (pkgmanager.Target, bool, error)
 	client    func(pkgmanager.Target, io.Writer) *pkgmanager.Client
 }
@@ -68,7 +68,6 @@ func (s *Service) InitializePackages(telemetry *gorm.DB, request PackageTaskRequ
 		request:   request,
 		dataPath:  filepath.Join(dataPath, "package-operations"),
 		admission: make(map[uint]*packageAdmission),
-		slots:     make(chan struct{}, 2),
 	}
 	s.packages.resolve = s.resolvePackageTarget
 	s.packages.client = func(target pkgmanager.Target, log io.Writer) *pkgmanager.Client {
@@ -136,13 +135,24 @@ func (s *Service) resolvePackageTarget(ctx context.Context, jail *jailModels.Jai
 		break
 	}
 	safe, err := pkgmanager.ValidatePrivateRoot(ctx, target)
-	if err != nil {
+	if err != nil && err.Error() != "package_shared_system_mount_unsupported" {
 		return pkgmanager.Target{}, false, err
 	}
+	target.SharedSystem = err != nil
 	if err := pkgmanager.Probe(""); err != nil {
 		return pkgmanager.Target{}, false, err
 	}
 	return target, safe && !target.Offline, nil
+}
+
+func upgradableTarget(target pkgmanager.Target) error {
+	if target.Offline {
+		return fmt.Errorf("jail_not_running")
+	}
+	if target.SharedSystem {
+		return fmt.Errorf("package_shared_system_mount_unsupported")
+	}
+	return nil
 }
 
 func (s *Service) packageState(jail *jailModels.Jail, guid string) (jailModels.JailPackageState, error) {
@@ -158,13 +168,6 @@ func (s *Service) packageState(jail *jailModels.Jail, guid string) (jailModels.J
 			GUID:      guid,
 			Inventory: []pkgmanager.Package{},
 			Audit:     pkgmanager.Audit{Packages: []pkgmanager.AuditPackage{}},
-		}
-	}
-	if auditHash := pkgmanager.AuditInventoryDigest(state.Inventory); state.AuditAt != nil && state.AuditInventoryHash != auditHash && state.AuditInventoryHash == pkgmanager.InventoryDigest(state.Inventory) {
-		previous := state.AuditInventoryHash
-		state.AuditInventoryHash = auditHash
-		if err := s.DB.Model(&state).Where("guid = ? AND audit_inventory_hash = ?", guid, previous).Update("audit_inventory_hash", state.AuditInventoryHash).Error; err != nil {
-			return state, err
 		}
 	}
 	if state.Inventory == nil {
@@ -210,9 +213,6 @@ func (s *Service) GetPackages(ctx context.Context, ctID uint) (jailTypes.Package
 	jail, guid, err := s.packageJail(ctx, ctID)
 	if err != nil {
 		return jailTypes.PackageView{}, err
-	}
-	if s.packages == nil {
-		return jailTypes.PackageView{}, fmt.Errorf("package_service_unavailable")
 	}
 	view, _, err := s.readPackages(ctx, jail, guid)
 	return view, err
@@ -260,6 +260,7 @@ func (s *Service) readPackages(ctx context.Context, jail *jailModels.Jail, guid 
 			view.Reason = packageErrorCode(targetErr)
 		} else {
 			view.Offline = target.Offline
+			view.SharedSystem = target.SharedSystem
 			view.SnapshotSupported = safe
 			inventory, readErr := s.packages.client(target, nil).Inventory(readCtx)
 			if readErr != nil {
@@ -326,9 +327,6 @@ func (s *Service) GetPackageDetails(ctx context.Context, ctID uint, name string)
 	if err != nil {
 		return jailTypes.PackageDetails{}, err
 	}
-	if s.packages == nil {
-		return jailTypes.PackageDetails{}, fmt.Errorf("package_service_unavailable")
-	}
 	view, target, err := s.readPackages(ctx, jail, guid)
 	if err != nil {
 		return jailTypes.PackageDetails{}, err
@@ -394,9 +392,6 @@ func (s *Service) StartPackageOperation(ctx context.Context, ctID uint, action s
 	if err != nil {
 		return jailTypes.PackageJob{}, err
 	}
-	if s.packages == nil || s.packages.request == nil {
-		return jailTypes.PackageJob{}, fmt.Errorf("package_service_unavailable")
-	}
 	scope, err := pkgmanager.NormalizeScope(req.Scope)
 	if err != nil {
 		return jailTypes.PackageJob{}, err
@@ -426,14 +421,10 @@ func (s *Service) StartPackageOperation(ctx context.Context, ctID uint, action s
 		if err = s.DB.First(&plan, "id = ? AND jail_id = ? AND guid = ?", req.PlanID, jail.ID, guid).Error; err != nil {
 			return jailTypes.PackageJob{}, fmt.Errorf("package_plan_not_found")
 		}
-		planScope, err := pkgmanager.NormalizeScope(plan.Scope)
-		if err != nil {
-			return jailTypes.PackageJob{}, err
-		}
-		if req.Scope != "" && scope != planScope {
+		if req.Scope != "" && scope != plan.Scope {
 			return jailTypes.PackageJob{}, fmt.Errorf("package_plan_scope_changed")
 		}
-		scope = planScope
+		scope = plan.Scope
 		if plan.AppliedOperationID != "" {
 			var existing jailModels.JailPackageOperation
 			if err = s.DB.First(&existing, "id = ?", plan.AppliedOperationID).Error; err == nil && existing.TaskID != nil {
@@ -441,13 +432,8 @@ func (s *Service) StartPackageOperation(ctx context.Context, ctID uint, action s
 			}
 			return jailTypes.PackageJob{}, fmt.Errorf("package_plan_already_used")
 		}
-		if scope == pkgmanager.ScopeSystem {
-			if plan.System == nil {
-				return jailTypes.PackageJob{}, fmt.Errorf("package_plan_stale")
-			}
-			if !req.Acknowledge {
-				return jailTypes.PackageJob{}, fmt.Errorf("package_system_acknowledgement_required")
-			}
+		if scope == pkgmanager.ScopeSystem && !req.Acknowledge {
+			return jailTypes.PackageJob{}, fmt.Errorf("package_system_acknowledgement_required")
 		}
 		if time.Now().After(plan.ExpiresAt) {
 			return jailTypes.PackageJob{}, fmt.Errorf("package_plan_stale")
@@ -465,8 +451,10 @@ func (s *Service) StartPackageOperation(ctx context.Context, ctID uint, action s
 	if err != nil {
 		return jailTypes.PackageJob{}, err
 	}
-	if action == "pkg-upgrade" && target.Offline {
-		return jailTypes.PackageJob{}, fmt.Errorf("jail_not_running")
+	if action == "pkg-upgrade" {
+		if err = upgradableTarget(target); err != nil {
+			return jailTypes.PackageJob{}, err
+		}
 	}
 	runtime := s.packages
 	runtime.mu.Lock()
@@ -492,7 +480,6 @@ func (s *Service) StartPackageOperation(ctx context.Context, ctID uint, action s
 		All:          req.All,
 		PlanID:       req.PlanID,
 		Snapshot:     req.Snapshot,
-		Acknowledge:  req.Acknowledge,
 	}
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&operation).Error; err != nil {
@@ -573,16 +560,14 @@ func (s *Service) finishPackageOperation(op jailModels.JailPackageOperation, err
 		logger.L.Error().Err(err).Str("operation_id", op.ID).Msg("package_completion_persistence_failed")
 		return
 	}
-	if s.packages != nil {
-		s.packages.mu.Lock()
-		if gate := s.packages.admission[op.CTID]; gate != nil && gate.operation == op.ID {
-			gate.operation, gate.cancel = "", nil
-			if gate.ordinary == 0 {
-				delete(s.packages.admission, op.CTID)
-			}
+	s.packages.mu.Lock()
+	if gate := s.packages.admission[op.CTID]; gate != nil && gate.operation == op.ID {
+		gate.operation, gate.cancel, gate.cancelled = "", nil, false
+		if gate.ordinary == 0 {
+			delete(s.packages.admission, op.CTID)
 		}
-		s.packages.mu.Unlock()
 	}
+	s.packages.mu.Unlock()
 }
 
 func (s *Service) packageOperation(ctx context.Context, ctID, taskID uint) (jailModels.JailPackageOperation, error) {
@@ -611,15 +596,20 @@ func (s *Service) CancelPackageOperation(ctx context.Context, ctID, taskID uint)
 		return jailTypes.PackageJob{}, err
 	}
 	var cancel context.CancelCauseFunc
+	queued := false
 	s.packages.mu.Lock()
 	if gate := s.packages.admission[ctID]; gate != nil && gate.operation == op.ID {
 		cancel = gate.cancel
+		if cancel == nil && op.Action != "pkg-upgrade" {
+			gate.cancelled, queued = true, true
+		}
 	}
 	s.packages.mu.Unlock()
-	if cancel == nil {
+	if cancel != nil {
+		cancel(errPackageCancelled)
+	} else if !queued {
 		return jailTypes.PackageJob{}, fmt.Errorf("package_operation_not_cancellable")
 	}
-	cancel(errPackageCancelled)
 	return s.packageJob(op)
 }
 
@@ -628,15 +618,11 @@ func (s *Service) packageJob(op jailModels.JailPackageOperation) (jailTypes.Pack
 	if err := s.DB.First(&task, "id = ? AND guest_type = ? AND guest_id = ? AND action = ?", op.TaskID, "jail", op.CTID, op.Action).Error; err != nil {
 		return jailTypes.PackageJob{}, err
 	}
-	scope, err := pkgmanager.NormalizeScope(op.Scope)
-	if err != nil {
-		return jailTypes.PackageJob{}, err
-	}
 	view := jailTypes.PackageJob{
 		TaskID:      task.ID,
 		OperationID: op.ID,
 		Action:      op.Action,
-		Scope:       scope,
+		Scope:       op.Scope,
 		Phase:       op.Phase,
 		Status:      task.Status,
 		Error:       op.Error,
@@ -648,22 +634,18 @@ func (s *Service) packageJob(op jailModels.JailPackageOperation) (jailTypes.Pack
 	}
 	if op.PlanID != "" {
 		var plan jailModels.JailPackagePlan
-		if err = s.DB.First(&plan, "id = ? AND jail_id = ? AND guid = ?", op.PlanID, op.JailID, op.GUID).Error; err != nil {
+		if err := s.DB.First(&plan, "id = ? AND jail_id = ? AND guid = ?", op.PlanID, op.JailID, op.GUID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return view, nil
 			}
 			return jailTypes.PackageJob{}, err
-		}
-		planScope, err := pkgmanager.NormalizeScope(plan.Scope)
-		if err != nil || planScope != scope {
-			return jailTypes.PackageJob{}, fmt.Errorf("package_plan_scope_changed")
 		}
 		view.Plan = &jailTypes.PackagePlan{
 			ID:          plan.ID,
 			ExpiresAt:   plan.ExpiresAt,
 			Selection:   plan.Selection,
 			Transaction: plan.Plan,
-			Scope:       planScope,
+			Scope:       plan.Scope,
 			System:      plan.System,
 		}
 	}
@@ -671,9 +653,6 @@ func (s *Service) packageJob(op jailModels.JailPackageOperation) (jailTypes.Pack
 }
 
 func (s *Service) packageDirectory(op jailModels.JailPackageOperation) (string, error) {
-	if s.packages == nil {
-		return "", fmt.Errorf("package_service_unavailable")
-	}
 	if _, err := uuid.Parse(op.ID); err != nil {
 		return "", fmt.Errorf("invalid_package_operation")
 	}
@@ -719,10 +698,6 @@ func (s *Service) PackageLogs(ctx context.Context, ctID, taskID uint, offset int
 }
 
 func eligiblePackageNames(packages []pkgmanager.Package, selection []string, all bool, scope pkgmanager.Scope) ([]string, error) {
-	scope, err := pkgmanager.NormalizeScope(scope)
-	if err != nil {
-		return nil, err
-	}
 	eligible := func(pkg pkgmanager.Package) bool {
 		if pkg.Locked {
 			return false

@@ -4,6 +4,7 @@
 		getContainerImages,
 		pruneContainerImages
 	} from '$lib/api/container/resources';
+	import { checkContainerUpdates } from '$lib/api/container/container';
 	import PullImage from '$lib/components/custom/Container/PullImage.svelte';
 	import AlertDialog from '$lib/components/custom/Dialog/Alert.svelte';
 	import SimpleSelect from '$lib/components/custom/SimpleSelect.svelte';
@@ -11,10 +12,12 @@
 	import TreeTable from '$lib/components/custom/TreeTable.svelte';
 	import Search from '$lib/components/custom/TreeTable/Search.svelte';
 	import Button from '$lib/components/ui/button/button.svelte';
+	import { reload } from '$lib/stores/api.svelte';
 	import type { Row } from '$lib/types/components/tree-table';
 	import type { ContainerImage } from '$lib/types/container/container';
 	import { formatBytesBinary } from '$lib/utils/bytes';
 	import { describeContainerError, toastContainerError } from '$lib/utils/container/errors';
+	import { escapeHTML } from '$lib/utils/string';
 	import { convertDbTime } from '$lib/utils/time';
 	import { resource } from 'runed';
 	import { toast } from 'svelte-sonner';
@@ -43,7 +46,16 @@
 
 	let table = $derived({
 		columns: [
-			{ field: 'name', title: 'Name' },
+			{
+				field: 'name',
+				title: 'Name',
+				formatter: (cell: CellComponent) => {
+					const name = escapeHTML(cell.getValue());
+					return cell.getRow().getData().untagged
+						? `<span class="text-muted-foreground">${name}</span> <span class="ml-1 rounded border px-1 text-xs" title="A newer pull of this tag replaced it; Prune removes it">Untagged</span>`
+						: name;
+				}
+			},
 			{
 				field: 'id',
 				title: 'ID',
@@ -62,7 +74,8 @@
 		],
 		rows: images.current.map((image) => ({
 			id: image.id,
-			name: image.names[0] ?? '<none>',
+			name: image.names[0] ?? (image.previous || '<none>'),
+			untagged: image.names.length === 0,
 			size: image.size,
 			created: image.created
 		}))
@@ -93,6 +106,19 @@
 		toast.success('Unused images pruned', { position: 'bottom-center' });
 		await images.refetch();
 	}
+
+	let checking = $state(false);
+	async function checkUpdates() {
+		checking = true;
+		const result = await checkContainerUpdates(data.node);
+		checking = false;
+		if (result.status === 'error') {
+			toastContainerError(result);
+			return;
+		}
+		toast.success('Checked for container image updates', { position: 'bottom-center' });
+		reload.leftPanel = true;
+	}
 </script>
 
 <div class="flex h-full w-full flex-col">
@@ -117,6 +143,14 @@
 			onclick={() => (modals.prune = true)}
 		>
 			<SpanWithIcon icon="icon-[mdi--broom]" size="h-4 w-4" gap="gap-2" title="Prune" />
+		</Button>
+		<Button size="sm" variant="outline" class="h-6.5" disabled={checking} onclick={checkUpdates}>
+			<SpanWithIcon
+				icon={checking ? 'icon-[mdi--loading] animate-spin' : 'icon-[mdi--update]'}
+				size="h-4 w-4"
+				gap="gap-2"
+				title="Check for Updates"
+			/>
 		</Button>
 		{#if selected}
 			<Button size="sm" variant="outline" class="h-6.5" onclick={() => (modals.delete = true)}>

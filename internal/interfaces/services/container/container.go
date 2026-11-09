@@ -18,6 +18,9 @@ const (
 )
 
 type Spec struct {
+	// Name renames the container on update: its hostname and the name its
+	// network knows it by. CreateRequest's own Name shadows it on create.
+	Name           string                   `json:"name,omitempty"`
 	Image          string                   `json:"image"`
 	OS             string                   `json:"os"`
 	Command        []string                 `json:"command"`
@@ -44,7 +47,7 @@ func SpecOf(c containerModels.Container) Spec {
 	if c.Network != nil {
 		network = c.Network.Name
 	}
-	return Spec{Image: c.Image, OS: c.OS, Command: c.Command, Entrypoint: c.Entrypoint, WorkDir: c.WorkDir,
+	return Spec{Name: c.Name, Image: c.Image, OS: c.OS, Command: c.Command, Entrypoint: c.Entrypoint, WorkDir: c.WorkDir,
 		User: c.User, Hostname: c.Hostname, Env: c.Env, Network: network, IP: c.IP, Ports: c.Ports, Mounts: c.Mounts,
 		Restart: c.Restart, RestartRetries: c.RestartRetries, StopTimeout: c.StopTimeout,
 		Annotations: c.Annotations, ExtraHosts: c.ExtraHosts, ShmSize: c.ShmSize}
@@ -53,6 +56,7 @@ func SpecOf(c containerModels.Container) Spec {
 type CreateRequest struct {
 	OCID        uint   `json:"ocId" binding:"required"`
 	Name        string `json:"name" binding:"required"`
+	Title       string `json:"title"`
 	Description string `json:"description"`
 	Pool        string `json:"pool" binding:"required"`
 	Spec
@@ -65,6 +69,10 @@ type CreateRequest struct {
 	WebHTTPS         bool   `json:"webHttps"`
 	CatalogApp       string `json:"catalogApp"`
 	Stack            string `json:"stack"`
+	StackTitle       string `json:"stackTitle"`
+	Service          string `json:"service"`
+	// Secrets are the catalog secrets the request was rendered with, by setting.
+	Secrets map[string]string `json:"secrets,omitempty"`
 }
 
 type CatalogPlan struct {
@@ -85,12 +93,16 @@ type DeleteRequest struct {
 }
 
 type OptionsRequest struct {
-	Name        *string `json:"name"`
+	Title       *string `json:"title"`
 	Description *string `json:"description"`
 	Cores       *uint   `json:"cores"`
 	Memory      *uint64 `json:"memory"`
 	StartAtBoot *bool   `json:"startAtBoot"`
 	StartOrder  *int    `json:"startOrder"`
+}
+
+type StackTitleRequest struct {
+	Title string `json:"title"`
 }
 
 type NetworkRequest struct {
@@ -135,10 +147,13 @@ type ListItem struct {
 }
 
 type SimpleList struct {
-	OCID  uint   `json:"ocId"`
-	Name  string `json:"name"`
-	Stack string `json:"stack"`
-	State string `json:"state"`
+	OCID       uint   `json:"ocId"`
+	Name       string `json:"name"`
+	Title      string `json:"title"`
+	Stack      string `json:"stack"`
+	StackTitle string `json:"stackTitle"`
+	State      string `json:"state"`
+	Update     bool   `json:"update"`
 }
 
 type Detail struct {
@@ -149,10 +164,11 @@ type Detail struct {
 }
 
 type Image struct {
-	ID      string    `json:"id"`
-	Names   []string  `json:"names"`
-	Size    int64     `json:"size"`
-	Created time.Time `json:"created"`
+	ID       string    `json:"id"`
+	Names    []string  `json:"names"`
+	Previous string    `json:"previous,omitempty"`
+	Size     int64     `json:"size"`
+	Created  time.Time `json:"created"`
 }
 
 type CatalogApp struct {
@@ -175,18 +191,20 @@ type CatalogVariant struct {
 }
 
 type CatalogVariable struct {
-	Name     string            `json:"name"`
-	Label    string            `json:"label"`
-	Hint     string            `json:"hint,omitempty"`
-	Type     string            `json:"type"`
-	Default  string            `json:"default"`
-	Optional bool              `json:"optional"`
-	Advanced bool              `json:"advanced"`
-	Volume   string            `json:"volume"`
-	Owner    string            `json:"owner,omitempty"`
-	Protocol string            `json:"protocol,omitempty"`
-	Target   string            `json:"target,omitempty"`
-	Values   map[string]string `json:"values,omitempty"`
+	Name        string            `json:"name"`
+	Label       string            `json:"label"`
+	Hint        string            `json:"hint,omitempty"`
+	Type        string            `json:"type"`
+	Placeholder string            `json:"placeholder,omitempty"`
+	Default     string            `json:"default"`
+	Optional    bool              `json:"optional"`
+	Advanced    bool              `json:"advanced"`
+	Volume      string            `json:"volume"`
+	Owner       string            `json:"owner,omitempty"`
+	Protocol    string            `json:"protocol,omitempty"`
+	Target      string            `json:"target,omitempty"`
+	Folders     []string          `json:"folders,omitempty"`
+	Values      map[string]string `json:"values,omitempty"`
 }
 
 type UsedPort struct {
@@ -218,12 +236,16 @@ type CatalogTemplate struct {
 	Variables  []CatalogVariable `json:"variables"`
 	Choices    []CatalogChoice   `json:"choices"`
 	Containers []string          `json:"containers"`
+	Stack      string            `json:"stack,omitempty"`
 }
 
 type CatalogRenderRequest struct {
 	Variant string            `json:"variant"`
 	Values  map[string]string `json:"values"`
 	Choices map[string]string `json:"choices"`
+	// Stack names a stack app's install in place of the app's ID, so it can be
+	// installed more than once.
+	Stack string `json:"stack"`
 }
 
 // Console is an interactive shell in a container.
@@ -242,6 +264,8 @@ type ContainerServiceInterface interface {
 	Command(ctx context.Context, ocid uint, args ...string) (*exec.Cmd, error)
 	Console(ctx context.Context, ocid uint, shell string, rows, cols uint16) (Console, error)
 	UpdateOptions(ctx context.Context, ocid uint, req OptionsRequest) error
+	RenameStack(ctx context.Context, stack, title string) error
+	CheckImageUpdates(ctx context.Context) error
 
 	UsedPorts(ctx context.Context, exceptOCID uint) ([]UsedPort, error)
 

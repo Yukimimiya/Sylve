@@ -20,6 +20,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/alchemillahq/gzfs"
 	"github.com/alchemillahq/sylve/internal/config"
@@ -29,6 +30,7 @@ import (
 	clusterServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/cluster"
 	containerServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/container"
 	"github.com/alchemillahq/sylve/internal/logger"
+	"github.com/alchemillahq/sylve/internal/metrics"
 	"gorm.io/gorm"
 )
 
@@ -55,6 +57,7 @@ type Service struct {
 	stateMu          sync.Mutex
 	states           map[string]containerServiceInterfaces.State
 	monitorOnce      sync.Once
+	metricsCache     metrics.Cache[metrics.Container]
 }
 
 func NewContainerService(db *gorm.DB, gzfs *gzfs.Client) (*Service, error) {
@@ -134,6 +137,7 @@ func (s *Service) Reconcile(ctx context.Context) error {
 func (s *Service) Startup(ctx context.Context) error {
 	s.StartStatsMonitoring(ctx)
 	go s.watchEvents(ctx)
+	go s.watchImageUpdates(ctx)
 	if enabled, err := s.enabled(ctx); err != nil || !enabled {
 		return err
 	}
@@ -145,10 +149,14 @@ func (s *Service) Startup(ctx context.Context) error {
 		return err
 	}
 	for _, pool := range basic.Pools {
-		if root, err := s.pullsRoot(ctx, pool); err == nil {
-			stale, _ := filepath.Glob(filepath.Join(root, ".pull-*"))
-			for _, dir := range stale {
-				_ = os.RemoveAll(dir)
+		if downloads, err := s.downloads(ctx, pool); err == nil {
+			// podman needs the downloads folder itself for every exec, not only pulls.
+			stale, _ := filepath.Glob(filepath.Join(filepath.Dir(downloads), ".pull-*"))
+			left, _ := filepath.Glob(filepath.Join(downloads, "*"))
+			for _, dir := range append(stale, left...) {
+				if dir != downloads {
+					_ = os.RemoveAll(dir)
+				}
 			}
 		}
 	}
@@ -356,7 +364,9 @@ func (s *Service) Get(ctx context.Context, ocid uint) (containerServiceInterface
 		}
 	}
 	if detail.Runtime != nil && detail.Runtime.State == "running" {
-		detail.CPUUsage, detail.MemoryUsage, _ = usage(ctx, record)
+		if current, err := readUsage(ctx, record.RuntimeID); err == nil && current.memory > 0 {
+			detail.CPUUsage, detail.MemoryUsage, _ = usagePercent(record, current)
+		}
 	}
 	return detail, nil
 }
@@ -485,11 +495,12 @@ func (s *Service) UpdateOptions(ctx context.Context, ocid uint, req containerSer
 		return err
 	}
 	updates := map[string]any{}
-	if req.Name != nil {
-		if err := s.validateName(ctx, *req.Name, record.ID); err != nil {
-			return err
+	if req.Title != nil {
+		title := strings.TrimSpace(*req.Title)
+		if utf8.RuneCountInString(title) > 63 {
+			return fmt.Errorf("invalid_container_title")
 		}
-		updates["name"] = *req.Name
+		updates["title"] = title
 	}
 	if req.Description != nil {
 		updates["description"] = *req.Description

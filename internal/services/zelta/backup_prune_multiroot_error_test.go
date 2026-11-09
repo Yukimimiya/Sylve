@@ -142,6 +142,7 @@ func TestIntegrationRunBackupJobMultiPoolPruneFailureIsReportedAndRetryable(t *t
 		t.Fatalf("enable keep-last retention: %v", err)
 	}
 	time.Sleep(time.Second)
+	changeDataset(t, diskA)
 
 	err := run()
 	if err == nil || !strings.Contains(err.Error(), "backup_prune_destroy_failed") {
@@ -165,8 +166,8 @@ func TestIntegrationRunBackupJobMultiPoolPruneFailureIsReportedAndRetryable(t *t
 		t.Fatalf("prune failure event: status=%q error=%q output=%q", failedEvent.Status, failedEvent.Error, failedEvent.Output)
 	}
 
-	remoteA := remoteActiveDatasetForSuffix(targetRoot, svc.backupDestSuffixForVMSource("", sourceA))
-	remoteB := remoteActiveDatasetForSuffix(targetRoot, svc.backupDestSuffixForVMSource("", sourceB))
+	remoteA := remoteActiveDatasetForSuffix(targetRoot, vmDestSuffixForSource("", sourceA))
+	remoteB := remoteActiveDatasetForSuffix(targetRoot, vmDestSuffixForSource("", sourceB))
 	for _, dataset := range []string{sourceA, diskA} {
 		requireBackupSnapshotCount(t, dataset, prefix, 2)
 	}

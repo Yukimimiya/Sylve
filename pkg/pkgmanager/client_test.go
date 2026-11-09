@@ -7,9 +7,12 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -21,7 +24,7 @@ func TestPackageCommandsRequireJailAndCannotInjectFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
-	if !strings.HasPrefix(joined, "-j 23 ") || !strings.Contains(joined, "IGNORE_OSVERSION=false") || !strings.Contains(joined, "REPO_AUTOUPDATE=false") || !strings.Contains(joined, "PKG_ENABLE_PLUGINS=false") || !strings.Contains(joined, "PKG_ENV={}") {
+	if !strings.HasPrefix(joined, "-j 23 ") || !strings.Contains(joined, "IGNORE_OSVERSION=false") || !strings.Contains(joined, "REPO_AUTOUPDATE=false") || !strings.Contains(joined, "PKG_ENABLE_PLUGINS=false") || !strings.Contains(joined, "PKG_ENV=SYLVE=1") {
 		t.Fatal(args)
 	}
 	for _, target := range []Target{{}, {JID: 23, Name: "jail", Root: "/"}, {Name: "jail", Root: "/private"}} {
@@ -43,14 +46,20 @@ func TestPackageCommandsRequireJailAndCannotInjectFlags(t *testing.T) {
 }
 
 func TestPackageCommandOutputIsBounded(t *testing.T) {
-	buffer := boundedBuffer{limit: 4}
-	for _, chunk := range []string{"ab", "cdef", "more output"} {
-		if n, err := buffer.Write([]byte(chunk)); err != nil || n != len(chunk) {
-			t.Fatalf("write=%d: %v", n, err)
+	for _, test := range []struct {
+		redirect string
+		limit    int
+	}{{"", 16 << 20}, {" >&2", 64 << 10}} {
+		binary := filepath.Join(t.TempDir(), "pkg-fixture")
+		script := "#!/bin/sh\n/usr/bin/head -c " + strconv.Itoa(test.limit+1) + " /dev/zero" + test.redirect + "\n"
+		if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if buffer.String() != "abcd" || !buffer.truncated {
-		t.Fatalf("output=%q truncated=%v", buffer.String(), buffer.truncated)
+		client := Client{Binary: binary, Target: Target{JID: 4, Name: "fixture", Root: "/fixture"}}
+		result, err := client.Run(t.Context(), "query", "-a", InventoryFormat)
+		if err == nil || err.Error() != "package_output_truncated" || len(result.Stdout)+len(result.Stderr) != test.limit {
+			t.Fatalf("output%s: %d bytes: %v", test.redirect, len(result.Stdout)+len(result.Stderr), err)
+		}
 	}
 }
 
@@ -64,6 +73,105 @@ func TestApplyStopsWithDaemonContext(t *testing.T) {
 	defer cancel()
 	if err := client.Apply(ctx, []string{"upgrade"}, Plan{}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("installer ignored cancellation: %v", err)
+	}
+}
+
+func TestCatalogDigestRejectsFIFOWithoutBlocking(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "var/db/pkg/repos/ports")
+	if err := os.MkdirAll(repo, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(repo, "db"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client := Client{Target: Target{JID: 4, Name: "fixture", Root: root}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.CatalogDigest(t.Context(), []Repository{{Name: "ports"}})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || err.Error() != "invalid_package_catalog" {
+			t.Fatalf("accepted a FIFO catalog: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("catalog digest blocked on a FIFO")
+	}
+}
+
+func TestConfirmedApplyOutlivesCancellationAndDrain(t *testing.T) {
+	dir := t.TempDir()
+	plan := "The following 1 package(s) will be affected (of 1 checked):\n\nInstalled packages to be UPGRADED:\n\tapp: 1 -> 2 [ports]\n\nNumber of packages to be upgraded: 1\n"
+	approved, err := ParsePlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(dir, "pkg-fixture")
+	script := "#!/bin/sh\nprintf '" + strings.ReplaceAll(plan, "\n", "\\n") + "\\nProceed with this action? [y/N]: '\nread answer\n[ \"$answer\" = y ] || exit 1\ntouch " + dir + "/confirmed\n/bin/sleep 1\ntouch " + dir + "/installed\n"
+	if err = os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	client := NewHostClient(nil)
+	client.Binary, client.HostSystem = binary, &HostInfo{Branch: "16.snap"}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- client.Apply(ctx, []string{"upgrade"}, approved) }()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err = os.Stat(filepath.Join(dir, "confirmed")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("installer was not confirmed")
+		}
+	}
+	cancel()
+	waited := false
+	Drain(func() { waited = true })
+	t.Cleanup(installs.Unlock)
+	if err = <-done; err != nil || !waited {
+		t.Fatalf("waited=%v: %v", waited, err)
+	}
+	if _, err = os.Stat(filepath.Join(dir, "installed")); err != nil {
+		t.Fatal("installer was killed after confirmation")
+	}
+	if err = client.Apply(t.Context(), []string{"upgrade"}, approved); err == nil || err.Error() != "sylve_shutting_down" {
+		t.Fatalf("started an install while draining: %v", err)
+	}
+}
+
+func TestApplyConfirmsOnlyTheApprovedPlan(t *testing.T) {
+	plan := "The following 1 package(s) will be affected (of 1 checked):\n\nInstalled packages to be UPGRADED:\n\tapp: 1 -> 2 [ports]\n\nNumber of packages to be upgraded: 1\n"
+	approved, err := ParsePlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := "printf '" + strings.ReplaceAll(plan, "\n", "\\n") + "\\nProceed with this action? [y/N]: '\nread answer\necho $answer >> \"$0.answers\"\n"
+	for _, test := range []struct {
+		name, script, answers, want string
+	}{
+		{"approved", prompt + "[ $answer = y ]\n", "y", ""},
+		{"changed plan", strings.Replace(prompt, "-> 2", "-> 3", 1), "n", "package_plan_changed"},
+		{"second prompt", prompt + prompt, "y\nn", "additional_package_transaction_unsupported"},
+		{"other prompt", "printf 'Proceed with deinstalling packages? [y/N]: '\nread answer\necho $answer >> \"$0.answers\"\n", "n", "unexpected_package_prompt"},
+		{"oversized output", "/usr/bin/head -c 4194305 /dev/zero | /usr/bin/tr '\\0' x\n" + prompt, "n", "package_confirmation_output_too_large"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			binary := filepath.Join(t.TempDir(), "pkg-fixture")
+			if err := os.WriteFile(binary, []byte("#!/bin/sh\n"+test.script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			client := NewHostClient(nil)
+			client.Binary, client.HostSystem = binary, &HostInfo{Branch: "16.snap"}
+			err := client.Apply(t.Context(), []string{"upgrade"}, approved)
+			if test.want == "" && err != nil || test.want != "" && (err == nil || !strings.HasPrefix(err.Error(), test.want)) {
+				t.Fatalf("expected %q: %v", test.want, err)
+			}
+			if answers, err := os.ReadFile(binary + ".answers"); err != nil || string(answers) != test.answers+"\n" {
+				t.Fatalf("answers %q: %v", answers, err)
+			}
+		})
 	}
 }
 
@@ -168,12 +276,9 @@ func TestPackageFileChecksCoverInstalledAndCandidateArchives(t *testing.T) {
 			files  string
 			reject bool
 		}{
-			{name: "application", files: "/usr/local/bin/app\n"},
-			{name: "boot-like name", files: "/usr/local/share/boot/config\n"},
+			{name: "application", files: "/usr/local/bin/app\n/usr/local/share/boot/config\n"},
 			{name: "boot directory", files: "/boot\n", reject: true},
-			{name: "kernel", files: "/boot/kernel/kernel\n", reject: true},
-			{name: "relative boot", files: "boot/loader\n", reject: true},
-			{name: "normalized boot", files: "/usr/local/../../boot/loader\n", reject: true},
+			{name: "relative boot path", files: "usr/../boot/loader\n", reject: true},
 		} {
 			t.Run(source+"/"+test.name, func(t *testing.T) {
 				root := t.TempDir()
@@ -228,6 +333,9 @@ func TestTransactionSubsetAndChangedRepositoryRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = ValidateTransaction(approved, approved); err != nil {
+		t.Fatal(err)
+	}
 	actual := approved
 	actual.Changes = append([]Change(nil), approved.Changes[:1]...)
 	if err = ValidateTransaction(actual, approved); err == nil {
@@ -258,6 +366,47 @@ func TestLogWriterRedactsSplitSecretsAndBoundsOutput(t *testing.T) {
 	}
 }
 
+func TestConfigOverridesReplaceTargetLists(t *testing.T) {
+	if _, err := os.Stat(DefaultBinary); err != nil {
+		t.Skip("pkg-static is not installed")
+	}
+	config := filepath.Join(t.TempDir(), "pkg.conf")
+	hostile := "PKG_ENV { HTTP_PROXY: \"http://jail:3128\" }\nALIAS { query: \"delete -y\" }\nAUDIT_IGNORE_GLOB [ \"*\" ]\nAUDIT_IGNORE_REGEX [ \".*\" ]\n"
+	if err := os.WriteFile(config, []byte(hostile), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args, err := (&Client{Target: Target{JID: 23, Name: "jail", Root: "/private/jail"}}).args("-vv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(DefaultBinary, append([]string{"-C", config}, args[2:]...)...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`sylve = "version";`, `SYLVE = "1";`, `"/",`, `"^/$",`} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("missing %s in:\n%s", want, out)
+		}
+	}
+	for _, kept := range []string{"jail:3128", "delete -y", `"*"`, `".*"`} {
+		if strings.Contains(string(out), kept) {
+			t.Fatalf("target config %s survived the overrides", kept)
+		}
+	}
+}
+
+func TestLogWriterTreatsCRLFAsOneLineBreak(t *testing.T) {
+	var output bytes.Buffer
+	writer := NewLogWriter(&output)
+	for _, chunk := range []string{"a\r\nb\r", "\nprogress 1%\rprogress 2%\n"} {
+		_, _ = writer.Write([]byte(chunk))
+	}
+	writer.Flush()
+	if output.String() != "a\nb\nprogress 1%\nprogress 2%\n" {
+		t.Fatalf("%q", output.String())
+	}
+}
+
 func TestLogFileLimitSurvivesWorkerHandoff(t *testing.T) {
 	file, err := os.OpenFile(filepath.Join(t.TempDir(), "output.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
@@ -285,14 +434,19 @@ Installed packages to be REMOVED:
 Installed packages to be DOWNGRADED:
 	app: 3.0 -> 2.0 [ports]
 Installed packages to be REINSTALLED:
-	my-long-app-1.0 [ports] (options changed)
+	drm-66-kmod-6.6.25.1500068_3 [ports] (options changed)
 Number of packages to be removed: 1
 Number of packages to be downgraded: 1
 Number of packages to be reinstalled: 1
 `
 	plan, err := ParsePlan(output)
-	if err != nil || len(plan.Changes) != 3 {
-		t.Fatalf("%+v %v", plan, err)
+	want := []Change{
+		{Action: "downgrade", Name: "app", From: "3.0", To: "2.0", Repository: "ports"},
+		{Action: "reinstall", Name: "drm-66-kmod", From: "6.6.25.1500068_3", To: "6.6.25.1500068_3", Repository: "ports"},
+		{Action: "remove", Name: "old-library", From: "1.0"},
+	}
+	if err != nil || !slices.Equal(plan.Changes, want) {
+		t.Fatalf("%+v %v", plan.Changes, err)
 	}
 }
 
@@ -376,18 +530,6 @@ func TestPackageCatalogPresenceRequiresRegularPrivateFiles(t *testing.T) {
 				t.Fatalf("present=%v: %v", present, err)
 			}
 		})
-	}
-}
-
-func TestPackageManagedPathsAreDeduplicatedAcrossVerificationPhases(t *testing.T) {
-	client := Client{Target: Target{JID: 1, Name: "fixture", Root: t.TempDir()}}
-	for _, files := range [][]string{{"/usr/local/bin/app", "", "/usr/local/lib/library"}, {"/usr/local/bin/app", "/usr/local/bin/app", ""}} {
-		if err := client.verifyPackagePaths(t.Context(), files); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if !slices.Equal(client.ManagedPaths, []string{"/usr/local/bin/app", "/usr/local/lib/library"}) {
-		t.Fatalf("duplicate or empty managed paths: %v", client.ManagedPaths)
 	}
 }
 

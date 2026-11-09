@@ -1,13 +1,9 @@
 import {
-	BackupJailMetadataInfoSchema,
-	BackupVMMetadataInfoSchema,
 	BackupEventProgressSchema,
 	BackupJobSchema,
 	BackupTargetDatasetInfoSchema,
 	BackupTargetSchema,
 	SnapshotPageSchema,
-	type BackupJailMetadataInfo,
-	type BackupVMMetadataInfo,
 	type BackupEventProgress,
 	type BackupGuestFilter,
 	type BackupJob,
@@ -44,6 +40,7 @@ export type BackupJobInput = {
 	sourceDataset?: string;
 	jailRootDataset?: string;
 	pruneKeepLast: number;
+	pruneKeepGenerations: number;
 	pruneTarget: boolean;
 	stopBeforeBackup: boolean;
 	recursive: boolean;
@@ -112,26 +109,6 @@ export async function resetBackupTargetHostKey(
 		APIResponseSchema,
 		'POST',
 		{ expectedRevision, confirmed: true }
-	);
-}
-
-export async function listBackupJobs(
-	targetId?: number,
-	guest?: BackupGuestFilter
-): Promise<BackupJob[]> {
-	const params = new URLSearchParams();
-	if (targetId && targetId > 0) {
-		params.set('targetId', String(targetId));
-	}
-	if (guest && guest.id > 0) {
-		params.set('guestType', guest.kind);
-		params.set('guestId', String(guest.id));
-	}
-	const query = params.toString();
-	return await apiRequestData(
-		`/cluster/backups/jobs${query ? `?${query}` : ''}`,
-		z.array(BackupJobSchema),
-		'GET'
 	);
 }
 
@@ -270,32 +247,6 @@ export async function listBackupTargetDatasetSnapshots(
 	return await apiRequestData(
 		`/cluster/backups/targets/${targetId}/datasets/snapshots?${params.toString()}`,
 		SnapshotPageSchema,
-		'GET'
-	);
-}
-
-export async function getBackupTargetJailMetadata(
-	targetId: number,
-	dataset: string
-): Promise<BackupJailMetadataInfo | null> {
-	const params = new URLSearchParams();
-	params.set('dataset', dataset);
-	return await apiRequestData(
-		`/cluster/backups/targets/${targetId}/datasets/jail-metadata?${params.toString()}`,
-		BackupJailMetadataInfoSchema.nullable(),
-		'GET'
-	);
-}
-
-export async function getBackupTargetVMMetadata(
-	targetId: number,
-	dataset: string
-): Promise<BackupVMMetadataInfo | null> {
-	const params = new URLSearchParams();
-	params.set('dataset', dataset);
-	return await apiRequestData(
-		`/cluster/backups/targets/${targetId}/datasets/vm-metadata?${params.toString()}`,
-		BackupVMMetadataInfoSchema.nullable(),
 		'GET'
 	);
 }

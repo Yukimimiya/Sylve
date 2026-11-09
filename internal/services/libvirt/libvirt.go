@@ -12,7 +12,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -29,7 +28,9 @@ import (
 	libvirtServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/libvirt"
 	systemServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/system"
 	"github.com/alchemillahq/sylve/internal/logger"
+	"github.com/alchemillahq/sylve/internal/metrics"
 	networkAttachment "github.com/alchemillahq/sylve/internal/network/attachment"
+	"github.com/alchemillahq/sylve/pkg/utils"
 
 	"github.com/digitalocean/go-libvirt"
 	"gorm.io/gorm"
@@ -55,6 +56,7 @@ type Service struct {
 	vmTemplateTargetCreateMu sync.Mutex
 
 	vmUsageSource        vmUsageDomainSource
+	metricsCache         metrics.Cache[metrics.VM]
 	vmUsageRetentionMu   sync.Mutex
 	lastVMUsageRetention time.Time
 
@@ -352,6 +354,8 @@ func (s *Service) writeVMJsonWithDB(db *gorm.DB, rid uint) error {
 		}
 	}
 
+	// Runtime state would rewrite the file, and dirty the dataset, on every start and stop.
+	vm.StartedAt, vm.StoppedAt, vm.IntentionallyStopped, vm.UpdatedAt = nil, nil, false, time.Time{}
 	vmJsonData, err := json.MarshalIndent(vm, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed_to_marshal_vm_to_json: %w", err)
@@ -370,23 +374,14 @@ func (s *Service) writeVMJsonWithDB(db *gorm.DB, rid uint) error {
 	}
 
 	copyFile := func(src, dst string) error {
-		srcFile, err := os.Open(src)
+		data, err := os.ReadFile(src)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
 			}
 			return err
 		}
-		defer srcFile.Close()
-
-		dstFile, err := os.Create(dst)
-		if err != nil {
-			return err
-		}
-		defer dstFile.Close()
-
-		_, err = io.Copy(dstFile, srcFile)
-		return err
+		return utils.WriteFileIfChanged(dst, data, 0644)
 	}
 
 	outputDirectories, err := s.resolveVMJSONOutputDirectories(context.Background(), vm)
@@ -400,7 +395,7 @@ func (s *Service) writeVMJsonWithDB(db *gorm.DB, rid uint) error {
 			return fmt.Errorf("failed_to_create_directory_%s: %w", sylveDir, err)
 		}
 
-		if err := os.WriteFile(vmJsonPath, vmJsonData, 0644); err != nil {
+		if err := utils.WriteFileIfChanged(vmJsonPath, vmJsonData, 0644); err != nil {
 			return fmt.Errorf("failed_to_write_vm_json_to_%s: %w", vmJsonPath, err)
 		}
 

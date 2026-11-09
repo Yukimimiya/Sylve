@@ -58,6 +58,7 @@ import (
 	"github.com/alchemillahq/sylve/internal/services/zfs"
 
 	portnetwork "github.com/alchemillahq/sylve/pkg/network"
+	"github.com/alchemillahq/sylve/pkg/pkgmanager"
 	"github.com/alchemillahq/sylve/pkg/utils"
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
@@ -451,7 +452,7 @@ func daemonAction(ctx context.Context, c *cli.Command) error {
 	r := gin.Default()
 	r.Use(gzip.Gzip(
 		gzip.BestSpeed,
-		gzip.WithExcludedPaths([]string{"/api/utilities/downloads", "/api/nodes/"}),
+		gzip.WithExcludedPaths([]string{"/api/utilities/downloads", "/api/nodes/", "/metrics"}),
 	))
 
 	handlers.RegisterRoutes(r,
@@ -625,6 +626,7 @@ func daemonAction(ctx context.Context, c *cli.Command) error {
 		selfRestartRequested = true
 	}
 
+	pkgmanager.Drain(func() { logger.L.Info().Msg("Waiting for running package installs to finish") })
 	logger.L.Info().Msg("Shutting down servers gracefully")
 	qStop()
 

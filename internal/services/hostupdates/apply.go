@@ -28,7 +28,7 @@ import (
 )
 
 type applyResult struct {
-	rebootBootID    string
+	reboot          bool
 	bootEnvironment string
 	executableHash  string
 }
@@ -138,7 +138,7 @@ func (s *Service) apply(ctx context.Context, op *models.HostUpdateOperation, log
 		return "", err
 	}
 	preflight, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	installed := s.installed(preflight, state)
+	installed := s.installed(preflight)
 	cancel()
 	if installed.SHA256 != plan.ExecutableHash || installed.Reason == "sylve_executable_changed_restart_required" {
 		return "", fmt.Errorf("host_update_plan_stale")
@@ -155,9 +155,6 @@ func (s *Service) apply(ctx context.Context, op *models.HostUpdateOperation, log
 	default:
 		err = fmt.Errorf("invalid_host_update_request")
 	}
-	if result.rebootBootID != "" {
-		err = errors.Join(err, s.DB.Model(&state).Update("reboot_boot_id", result.rebootBootID).Error)
-	}
 	err = errors.Join(err, s.DB.Model(&state).Updates(map[string]any{"check_inventory_hash": "", "audit_inventory_hash": ""}).Error)
 	if err != nil {
 		return "Some packages or the executable may have changed. Inspect the log and installed state before retrying; no automatic rollback was performed.", err
@@ -166,8 +163,8 @@ func (s *Service) apply(ctx context.Context, op *models.HostUpdateOperation, log
 	if result.bootEnvironment != "" {
 		message += " Pre-update boot environment: " + result.bootEnvironment + "."
 	}
-	if result.rebootBootID != "" {
-		message += " Host reboot recommended."
+	if result.reboot {
+		message += rebootNotice
 	}
 	if result.executableHash != s.runningDigest {
 		actual, err := sylveupdate.FileDigest(s.executable)
@@ -263,20 +260,14 @@ func (s *Service) applyPackages(ctx context.Context, op *models.HostUpdateOperat
 		result.bootEnvironment = name
 		_, _ = fmt.Fprintf(log, "Pre-update boot environment: %s. This does not back up separate data datasets or EFI partitions.\n", name)
 	}
-	if needsReboot {
-		result.rebootBootID, err = s.command(ctx, "/sbin/sysctl", "-n", "kern.boottime")
-		result.rebootBootID = bootIdentity(result.rebootBootID)
-		if err != nil || result.rebootBootID == "" {
-			return fmt.Errorf("host_boot_identity_unavailable")
-		}
-	}
+	result.reboot = needsReboot
 	if err = s.phase(op, "applying"); err != nil {
 		return err
 	}
 	if err = client.Apply(applyCtx, pkgmanager.UpgradeArgs(repos, approved.Selection, false), approved.Transaction); err != nil {
 		return err
 	}
-	afterCtx, cancelAfter := context.WithTimeout(applyCtx, 2*time.Minute)
+	afterCtx, cancelAfter := context.WithTimeout(context.WithoutCancel(applyCtx), 2*time.Minute)
 	defer cancelAfter()
 	after, err := client.Inventory(afterCtx)
 	if err != nil {
@@ -300,7 +291,7 @@ func (s *Service) applyRelease(ctx context.Context, op *models.HostUpdateOperati
 	if err := sylveupdate.Allowed(installed, *plan.Release); err != nil {
 		return err
 	}
-	if installed.Path != "/usr/local/sbin/sylve" {
+	if installed.Path != s.standalonePath {
 		return fmt.Errorf("sylve_standalone_path_required")
 	}
 	if err := trustedExecutable(installed.Path); err != nil {
@@ -352,6 +343,13 @@ func (s *Service) applyRelease(ctx context.Context, op *models.HostUpdateOperati
 	if err = s.phase(op, "applying"); err != nil {
 		return err
 	}
+	previous := installed.Path + ".prev"
+	if err = os.Remove(previous); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err = os.Link(installed.Path, previous); err != nil {
+		return err
+	}
 	if err = os.Rename(staged, installed.Path); err != nil {
 		return err
 	}
@@ -364,7 +362,7 @@ func (s *Service) applyRelease(ctx context.Context, op *models.HostUpdateOperati
 		return err
 	}
 	result.executableHash = plan.Release.SHA256
-	_, _ = fmt.Fprintf(log, "Installed %s %s (%s). Sylve will restart; replication-protected guests may stop or fail over. No automatic downgrade/rollback is performed.\n", plan.Release.Channel, plan.Release.Version, plan.Release.Commit)
+	_, _ = fmt.Fprintf(log, "Installed %s %s (%s). Sylve will restart; replication-protected guests may stop or fail over. The previous binary is kept at %s for a manual rollback.\n", plan.Release.Channel, plan.Release.Version, plan.Release.Commit, previous)
 	return nil
 }
 
@@ -377,9 +375,6 @@ func (s *Service) completeApply(ctx context.Context, op models.HostUpdateOperati
 		targetTime, targetErr := sylveupdate.ParseBuildTime(plan.Release.BuiltAt)
 		if s.runningDigest != plan.Release.SHA256 || s.version != plan.Release.Version || s.commit != plan.Release.Commit || err != nil || targetErr != nil || !builtAt.Equal(targetTime) {
 			return "", fmt.Errorf("sylve_startup_identity_mismatch")
-		}
-		if err = s.DB.Model(&models.HostUpdateState{}).Where("id = 1").Updates(map[string]any{"installed_channel": plan.Release.Channel, "installed_digest": s.runningDigest, "installed_built_at": plan.Release.BuiltAt}).Error; err != nil {
-			return "", err
 		}
 		return "Sylve was updated and restarted successfully.", nil
 	}
@@ -396,7 +391,8 @@ func (s *Service) completeApply(ctx context.Context, op models.HostUpdateOperati
 	}
 	if err != nil {
 		message += " Follow-up audit unavailable: " + pkgmanager.Redact(err.Error())
-		_ = s.failedCheck("audit", err)
+		s.storeError("audit_error", err)
+		_ = s.recordHealth("audit", err)
 	}
 	return message, nil
 }
@@ -448,6 +444,10 @@ func (s *Service) reconcileAudits() error {
 func (s *Service) Recover() error {
 	if err := s.reconcileAudits(); err != nil {
 		return err
+	}
+	stages, _ := filepath.Glob(filepath.Join(filepath.Dir(s.executable), ".sylve-update-*"))
+	for _, stage := range stages {
+		_ = os.RemoveAll(stage)
 	}
 	var operations []models.HostUpdateOperation
 	if err := s.DB.Where("active IS NOT NULL").Find(&operations).Error; err != nil {

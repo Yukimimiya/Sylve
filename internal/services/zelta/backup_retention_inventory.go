@@ -6,6 +6,7 @@ package zelta
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -16,7 +17,6 @@ type backupRetentionScopeInventory struct {
 	sourceRoot        string
 	remoteRoot        string
 	localSnapshots    []SnapshotInfo
-	localSnapshotErr  error
 	remoteSnapshots   []SnapshotInfo
 	manifestInventory remoteBackupManifestInventory
 }
@@ -66,12 +66,14 @@ func (s *Service) loadBackupRetentionScopeInventories(
 				err,
 			)
 		}
-		localSnapshots, localErr := s.listLocalSnapshotsForDataset(ctx, sourceRoot)
+		localSnapshots, err := s.listLocalSnapshotsForDataset(ctx, sourceRoot)
+		if err != nil {
+			return nil, fmt.Errorf("backup_prune_local_snapshot_list_failed: source=%s: %w", sourceRoot, err)
+		}
 		inventories = append(inventories, backupRetentionScopeInventory{
 			sourceRoot:        sourceRoot,
 			remoteRoot:        remoteRoot,
 			localSnapshots:    localSnapshots,
-			localSnapshotErr:  localErr,
 			remoteSnapshots:   remoteSnapshots,
 			manifestInventory: manifestInventory,
 		})
@@ -137,6 +139,10 @@ func (s *Service) backupRetentionEligibleSnapshotProofsFromInventories(
 			// for destructive cleanup. Keep legacy points indefinitely.
 			continue
 		}
+		if _, rootHasIt := inventories[commitRoot].snapshotGUIDsByName[shortName][commitRoot]; !rootHasIt {
+			// The commit marker lives on the root snapshot.
+			continue
+		}
 		shortNames = append(shortNames, shortName)
 		remoteCommitSnapshots = append(remoteCommitSnapshots, commitRoot+"@"+shortName)
 	}
@@ -169,20 +175,17 @@ func (s *Service) backupRetentionEligibleSnapshotProofsFromInventories(
 			)
 		}
 		metadata := result.Metadata
-		if err := validateBackupRestoreCommit(metadata, job, shortName); err != nil {
+		if err := validateBackupRestoreCommit(metadata, job.ID, shortName); err != nil {
 			return proofs, fmt.Errorf(
 				"backup_retention_commit_state_unavailable: snapshot=%s: %w",
 				shortName,
 				err,
 			)
 		}
-		manifest, err := buildRemoteBackupManifestFromInventories(
-			job,
-			shortName,
-			metadata.Recursive,
-			scopes,
-			inventories,
-		)
+		manifest, err := buildRemoteBackupManifestFromInventories(job, metadata, scopes, inventories)
+		if errors.Is(err, errBackupGenerationUnprovable) {
+			continue
+		}
 		if err != nil {
 			return proofs, fmt.Errorf(
 				"backup_retention_manifest_unavailable: snapshot=%s: %w",
@@ -219,9 +222,6 @@ func localRetentionProtectSetFromSnapshots(
 			continue
 		}
 		dataset := snapshotDatasetName(snap.Name)
-		if dataset == "" {
-			dataset = normalizeDatasetPath(snap.Dataset)
-		}
 		newestPerDataset[dataset] = snap
 	}
 	for _, snap := range newestPerDataset {

@@ -38,11 +38,6 @@ func (s *Service) ExecutePackageTask(ctx context.Context, taskID uint) (runErr e
 		}
 		return nil
 	}
-	if op.Phase == "applying" || op.Phase == "post_upgrade_audit" {
-		err := fmt.Errorf("package_operation_interrupted: inspect installed packages and logs before requesting a fresh preview; no automatic retry")
-		s.finishPackageOperation(op, err)
-		return err
-	}
 	// Upgrades can't be stopped: killing pkg mid-install could leave the jail
 	// half-upgraded.
 	if op.Action != "pkg-upgrade" {
@@ -52,15 +47,15 @@ func (s *Service) ExecutePackageTask(ctx context.Context, taskID uint) (runErr e
 		s.packages.mu.Lock()
 		if gate := s.packages.admission[op.CTID]; gate != nil && gate.operation == op.ID {
 			gate.cancel = cancel
+			if gate.cancelled {
+				cancel(errPackageCancelled)
+			}
 		}
 		s.packages.mu.Unlock()
 	}
-	select {
-	case s.packages.slots <- struct{}{}:
-		defer func() { <-s.packages.slots }()
-	case <-ctx.Done():
-		s.finishPackageOperation(op, context.Cause(ctx))
-		return context.Cause(ctx)
+	if err := context.Cause(ctx); err != nil {
+		s.finishPackageOperation(op, err)
+		return err
 	}
 	defer func() {
 		if runErr != nil && (op.Action == "pkg-check-updates" || op.Action == "pkg-preview") {
@@ -100,8 +95,10 @@ func (s *Service) ExecutePackageTask(ctx context.Context, taskID uint) (runErr e
 	if err != nil {
 		return err
 	}
-	if op.Action == "pkg-upgrade" && target.Offline {
-		return fmt.Errorf("jail_not_running")
+	if op.Action == "pkg-upgrade" {
+		if err = upgradableTarget(target); err != nil {
+			return err
+		}
 	}
 	dir, err := s.packageDirectory(op)
 	if err != nil {
@@ -115,12 +112,8 @@ func (s *Service) ExecutePackageTask(ctx context.Context, taskID uint) (runErr e
 	log := pkgmanager.NewLogWriter(file)
 	defer log.Flush()
 	client := s.packages.client(target, log)
-	scope, err := pkgmanager.NormalizeScope(op.Scope)
-	if err != nil {
-		return err
-	}
+	scope := op.Scope
 	client.Scope = scope
-	op.Scope = scope
 	if err = s.packagePhase(&op, "reading_inventory"); err != nil {
 		return err
 	}
@@ -188,17 +181,8 @@ func (s *Service) ExecutePackageTask(ctx context.Context, taskID uint) (runErr e
 		if err = s.DB.First(&plan, "id = ? AND jail_id = ? AND guid = ? AND applied_operation_id = ?", op.PlanID, op.JailID, op.GUID, op.ID).Error; err != nil {
 			return fmt.Errorf("package_plan_not_found")
 		}
-		planScope, err := pkgmanager.NormalizeScope(plan.Scope)
-		if err != nil || planScope != scope {
-			return fmt.Errorf("package_plan_scope_changed")
-		}
-		if scope == pkgmanager.ScopeSystem {
-			if !op.Acknowledge {
-				return fmt.Errorf("package_system_acknowledgement_required")
-			}
-			if plan.System == nil || client.System == nil || *plan.System != *client.System {
-				return fmt.Errorf("package_plan_stale")
-			}
+		if scope == pkgmanager.ScopeSystem && *plan.System != *client.System {
+			return fmt.Errorf("package_plan_stale")
 		}
 		if time.Now().After(plan.ExpiresAt) || plan.InventoryHash != pkgmanager.InventoryDigest(inventory) || plan.RepositoryHash != repoHash {
 			return fmt.Errorf("package_plan_stale")
@@ -308,9 +292,26 @@ func (s *Service) ExecutePackageTask(ctx context.Context, taskID uint) (runErr e
 	if err = s.packagePhase(&op, "solving"); err != nil {
 		return err
 	}
-	plan, err := client.Preview(ctx, repos, names)
-	if err != nil {
-		return err
+	var plan pkgmanager.Plan
+	pkgFirst := false
+	if scope == pkgmanager.ScopeApplications && op.Action == "pkg-preview" {
+		manager := ""
+		for _, pkg := range inventory {
+			if pkgmanager.Classify(pkg.Name, pkg.Origin) == pkgmanager.KindPackageManager {
+				manager = pkg.Name
+			}
+		}
+		if plan, pkgFirst, err = client.ManagerPreview(ctx, repos, manager); err != nil {
+			return err
+		}
+		if pkgFirst {
+			names = []string{manager}
+		}
+	}
+	if !pkgFirst {
+		if plan, err = client.Preview(ctx, repos, names); err != nil {
+			return err
+		}
 	}
 	if err = client.ValidateInstalled(plan, inventory); err != nil {
 		return err
@@ -321,7 +322,7 @@ func (s *Service) ExecutePackageTask(ctx context.Context, taskID uint) (runErr e
 		}
 		return s.DB.Model(&op).Update("result", fmt.Sprintf("%d transaction actions available", len(plan.Changes))).Error
 	}
-	if op.All {
+	if op.All && !pkgFirst {
 		if err = s.storeUpdateCheck(state, inventory, plan, scope); err != nil {
 			return err
 		}
@@ -346,7 +347,11 @@ func (s *Service) ExecutePackageTask(ctx context.Context, taskID uint) (runErr e
 	if err = s.DB.Create(&stored).Error; err != nil {
 		return err
 	}
-	return s.DB.Model(&op).Updates(map[string]any{"plan_id": stored.ID, "result": fmt.Sprintf("%d transaction actions", len(plan.Changes))}).Error
+	result := fmt.Sprintf("%d transaction actions", len(plan.Changes))
+	if pkgFirst {
+		result = "pkg must be upgraded on its own first. Upgrade it, then preview the remaining packages again."
+	}
+	return s.DB.Model(&op).Updates(map[string]any{"plan_id": stored.ID, "result": result}).Error
 }
 
 func (s *Service) savePackageInventory(state jailModels.JailPackageState) error {
@@ -461,9 +466,6 @@ func (s *Service) finalizeRecoveredPackageTask(op jailModels.JailPackageOperatio
 }
 
 func (s *Service) RecoverPackageTasks(ctx context.Context) error {
-	if s.packages == nil {
-		return nil
-	}
 	var operations []jailModels.JailPackageOperation
 	if err := s.DB.WithContext(ctx).Where("active_jail_id IS NOT NULL OR task_id IN (SELECT id FROM guest_lifecycle_tasks WHERE status IN ?)", []string{"queued", "running"}).Find(&operations).Error; err != nil {
 		return err

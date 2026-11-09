@@ -142,6 +142,12 @@ export async function containerAction(
 	);
 }
 
+export async function checkContainerUpdates(hostname?: string): Promise<APIResponse> {
+	return await apiRequestResult('/container/updates/check', APIResponseSchema, 'POST', undefined, {
+		hostname
+	});
+}
+
 export async function updateContainerOptions(
 	ocId: number,
 	options: ContainerOptions,
@@ -150,6 +156,20 @@ export async function updateContainerOptions(
 	return await apiRequestResult(`/container/${ocId}/options`, APIResponseSchema, 'PATCH', options, {
 		hostname
 	});
+}
+
+export async function renameContainerStack(
+	stack: string,
+	title: string,
+	hostname?: string
+): Promise<APIResponse> {
+	return await apiRequestResult(
+		`/container/stack/${encodeURIComponent(stack)}`,
+		APIResponseSchema,
+		'PATCH',
+		{ title },
+		{ hostname }
+	);
 }
 
 export async function getContainerLogs(

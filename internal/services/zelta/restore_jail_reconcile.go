@@ -34,34 +34,28 @@ var ErrSwitchNotFound = networkAttachment.ErrSwitchNotFound
 
 var resolveRestoredJailNetworkAttachment = jailService.ResolveDesiredTargetNetworkAttachment
 
-func lockRestoredJailNetworkLifecycle(
+func lockRestoredNetworkLifecycle[N any](
 	db *gorm.DB,
-	networks []jailModels.Network,
+	guestType string,
+	networks []N,
+	attachment func(N) (networkAttachment.Contract, error),
 ) (func(), error) {
 	resolver := networkAttachment.NewResolver(db)
 	bridges := make([]string, 0, len(networks))
 	for idx, network := range networks {
-		expected, err := jailService.NetworkAttachmentFromMetadata(network)
+		expected, err := attachment(network)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"restored_jail_network_source_attachment_invalid: network=%d: %w",
-				idx+1,
-				err,
+				"restored_%s_network_source_attachment_invalid: network=%d: %w", guestType, idx+1, err,
 			)
 		}
 		target, err := resolver.ResolveIdentityByName(expected.SwitchType, expected.SwitchName)
+		if errors.Is(err, ErrSwitchNotFound) {
+			return nil, fmt.Errorf("restored_network_switch_not_found: network=%d: %w", idx+1, err)
+		}
 		if err != nil {
-			if errors.Is(err, ErrSwitchNotFound) {
-				return nil, fmt.Errorf(
-					"restored_network_switch_not_found: network=%d: %w",
-					idx+1,
-					err,
-				)
-			}
 			return nil, fmt.Errorf(
-				"restored_jail_network_attachment_incompatible: network=%d: %w",
-				idx+1,
-				err,
+				"restored_%s_network_attachment_incompatible: network=%d: %w", guestType, idx+1, err,
 			)
 		}
 		if target.Type == "standard" {
@@ -77,10 +71,6 @@ type jailConfigBuilder interface {
 
 type jailDevfsCleaner interface {
 	RemoveDevfsRulesForCTID(ctid uint) error
-}
-
-type jailMetadataWriter interface {
-	WriteJailJSON(ctid uint) error
 }
 
 type jailHardwareNormalizer interface {
@@ -155,11 +145,7 @@ func (s *Service) reconcileRestoredJailFromDatasetMode(
 		return err
 	}
 	if strictAsNew {
-		writer, ok := s.Jail.(jailMetadataWriter)
-		if !ok {
-			return fmt.Errorf("restored_jail_metadata_writer_unavailable")
-		}
-		if err := writer.WriteJailJSON(reconciled.CTID); err != nil {
+		if err := s.Jail.WriteJailJSON(reconciled.CTID); err != nil {
 			return fmt.Errorf("failed_to_refresh_restored_jail_metadata: %w", err)
 		}
 	}
@@ -290,7 +276,9 @@ func (s *Service) upsertRestoredJailState(
 	}
 
 	if restoreNetwork {
-		unlockNetworkLifecycle, lockErr := lockRestoredJailNetworkLifecycle(s.DB, restored.Networks)
+		unlockNetworkLifecycle, lockErr := lockRestoredNetworkLifecycle(
+			s.DB, "jail", restored.Networks, jailService.NetworkAttachmentFromMetadata,
+		)
 		if lockErr != nil {
 			return nil, lockErr
 		}
@@ -317,7 +305,7 @@ func (s *Service) upsertRestoredJailState(
 		}
 		existingFound = lookup.RowsAffected > 0
 
-		resolvedName, err := s.ensureUniqueRestoredJailName(tx, name, ctid, existing.ID)
+		resolvedName, err := uniqueRestoredGuestName(tx, &jailModels.Jail{}, name, existing.ID)
 		if err != nil {
 			return err
 		}
@@ -345,10 +333,6 @@ func (s *Service) upsertRestoredJailState(
 			AllowedOptions:    append([]string{}, restored.AllowedOptions...),
 			MetadataMeta:      restored.MetadataMeta,
 			MetadataEnv:       restored.MetadataEnv,
-			StartLogs:         restored.StartLogs,
-			StopLogs:          restored.StopLogs,
-			StartedAt:         restored.StartedAt,
-			StoppedAt:         restored.StoppedAt,
 		}
 
 		if existingFound {
@@ -377,10 +361,6 @@ func (s *Service) upsertRestoredJailState(
 				"AllowedOptions",
 				"MetadataMeta",
 				"MetadataEnv",
-				"StartLogs",
-				"StopLogs",
-				"StartedAt",
-				"StoppedAt",
 			).Updates(&baseJail).Error; err != nil {
 				return fmt.Errorf("failed_to_update_restored_jail_record: %w", err)
 			}
@@ -955,27 +935,19 @@ func (s *Service) ensureUniqueRestoredObjectName(tx *gorm.DB, base string) (stri
 	}
 }
 
-func (s *Service) ensureUniqueRestoredJailName(tx *gorm.DB, name string, ctid uint, currentID uint) (string, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = fmt.Sprintf("jail-%d", ctid)
-	}
-
-	base := name
-	candidate := base
+// uniqueRestoredGuestName keeps a restored guest's name, with a -N suffix while
+// another guest of its kind (model) holds it.
+func uniqueRestoredGuestName(tx *gorm.DB, model any, name string, currentID uint) (string, error) {
+	candidate := name
 	for i := 1; ; i++ {
-		var existing jailModels.Jail
-		lookup := tx.Where("name = ?", candidate).Limit(1).Find(&existing)
-		if lookup.Error != nil {
-			return "", fmt.Errorf("failed_to_validate_restored_jail_name: %w", lookup.Error)
+		var count int64
+		if err := tx.Model(model).Where("name = ? AND id <> ?", candidate, currentID).Count(&count).Error; err != nil {
+			return "", fmt.Errorf("failed_to_validate_restored_guest_name: %w", err)
 		}
-		if lookup.RowsAffected == 0 {
+		if count == 0 {
 			return candidate, nil
 		}
-		if existing.ID == currentID {
-			return candidate, nil
-		}
-		candidate = fmt.Sprintf("%s-%d", base, i)
+		candidate = fmt.Sprintf("%s-%d", name, i)
 	}
 }
 

@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -45,17 +44,15 @@ type Job struct {
 
 type View struct {
 	models.HostUpdateState
-	Ready                    bool                         `json:"ready"`
-	Pkgbase                  bool                         `json:"pkgbase"`
-	Reason                   string                       `json:"reason"`
-	UpdatesChecked           bool                         `json:"updatesChecked"`
-	AuditStale               bool                         `json:"auditStale"`
-	RebootRecommended        bool                         `json:"rebootRecommended"`
-	BootEnvironmentSupported bool                         `json:"bootEnvironmentSupported"`
-	Sylve                    sylveupdate.Installed        `json:"sylve"`
-	ReleaseAvailable         bool                         `json:"releaseAvailable"`
-	ActiveJob                *Job                         `json:"activeJob"`
-	History                  []models.HostUpdateOperation `json:"history"`
+	Ready                    bool                  `json:"ready"`
+	Pkgbase                  bool                  `json:"pkgbase"`
+	Reason                   string                `json:"reason"`
+	UpdatesChecked           bool                  `json:"updatesChecked"`
+	AuditStale               bool                  `json:"auditStale"`
+	BootEnvironmentSupported bool                  `json:"bootEnvironmentSupported"`
+	Sylve                    sylveupdate.Installed `json:"sylve"`
+	ReleaseAvailable         bool                  `json:"releaseAvailable"`
+	ActiveJob                *Job                  `json:"activeJob"`
 }
 
 type Monitoring struct {
@@ -73,11 +70,13 @@ type Service struct {
 	commit           string
 	builtAt          string
 	executable       string
+	executableInfo   os.FileInfo
 	runningDigest    string
+	standalonePath   string
+	bootEnvironments bool
 	restart          func()
 	mu               sync.Mutex
 	releaseMu        sync.Mutex
-	releaseAttemptAt time.Time
 	readMu           sync.Mutex
 	readID           uint
 	cancelRead       context.CancelCauseFunc
@@ -86,7 +85,7 @@ type Service struct {
 	command          func(context.Context, string, ...string) (string, error)
 	releases         *sylveupdate.Client
 	ownership        func(context.Context, *pkgmanager.Client, string) (bool, string, error)
-	installed        func(context.Context, models.HostUpdateState) sylveupdate.Installed
+	installed        func(context.Context) sylveupdate.Installed
 }
 
 func NewService(ctx context.Context, database, telemetry *gorm.DB, dataPath, version, commit, builtAt string, restart func()) (*Service, error) {
@@ -104,29 +103,37 @@ func NewService(ctx context.Context, database, telemetry *gorm.DB, dataPath, ver
 	if err != nil {
 		return nil, err
 	}
+	info, err := os.Stat(executable)
+	if err != nil {
+		return nil, err
+	}
 	digest, err := sylveupdate.FileDigest(executable)
 	if err != nil {
 		return nil, err
 	}
 	s := &Service{
-		DB:            database,
-		Telemetry:     telemetry,
-		context:       ctx,
-		directory:     directory,
-		version:       version,
-		commit:        commit,
-		executable:    executable,
-		runningDigest: digest,
-		restart:       restart,
-		client:        pkgmanager.NewHostClient,
-		probe:         pkgmanager.ProbeHost,
-		releases:      sylveupdate.NewClient(),
-		command:       runCommand,
-		ownership:     packageOwnership,
+		DB:             database,
+		Telemetry:      telemetry,
+		context:        ctx,
+		directory:      directory,
+		version:        version,
+		commit:         commit,
+		executable:     executable,
+		executableInfo: info,
+		runningDigest:  digest,
+		standalonePath: "/usr/local/sbin/sylve",
+		restart:        restart,
+		client:         pkgmanager.NewHostClient,
+		probe:          pkgmanager.ProbeHost,
+		releases:       sylveupdate.NewClient(),
+		command:        runCommand,
+		ownership:      packageOwnership,
 	}
 	if timestamp, err := sylveupdate.ParseBuildTime(builtAt); err == nil {
 		s.builtAt = timestamp.Format(time.RFC3339Nano)
 	}
+	_, err = s.command(ctx, "/sbin/bectl", "check")
+	s.bootEnvironments = err == nil
 	s.installed = s.inspectInstalled
 	if _, err = s.state(); err != nil {
 		return nil, err
@@ -168,39 +175,10 @@ func (s *Service) state() (models.HostUpdateState, error) {
 	return state, err
 }
 
-func (s *Service) installedBuildTime(state models.HostUpdateState) string {
-	timestamps := []string{s.builtAt}
-	if state.InstalledDigest == s.runningDigest {
-		timestamps = append(timestamps, state.InstalledBuiltAt)
-	}
-	if state.Release != nil && state.Release.SHA256 == s.runningDigest {
-		timestamps = append(timestamps, state.Release.BuiltAt)
-	}
-	for _, value := range timestamps {
-		if timestamp, err := sylveupdate.ParseBuildTime(value); err == nil {
-			return timestamp.Format(time.RFC3339Nano)
-		}
-	}
-	var plan models.HostUpdatePlan
-	err := s.DB.Joins("JOIN host_update_operations AS operation ON operation.plan_id = host_update_plans.id").
-		Where("operation.action = ? AND operation.status = ?", "sylve-apply", "success").
-		Where("json_extract(host_update_plans.release, '$.sha256') = ?", s.runningDigest).
-		Order("operation.id DESC").Limit(1).Find(&plan).Error
-	if err == nil && plan.Release != nil {
-		if timestamp, err := sylveupdate.ParseBuildTime(plan.Release.BuiltAt); err == nil {
-			return timestamp.Format(time.RFC3339Nano)
-		}
-	}
-	return ""
-}
-
-func (s *Service) inspectInstalled(ctx context.Context, state models.HostUpdateState) sylveupdate.Installed {
-	installed := sylveupdate.Installed{Mode: "unknown", Version: s.version, Commit: s.commit, BuiltAt: s.installedBuildTime(state), Channel: "rolling", SHA256: s.runningDigest, Path: s.executable}
-	if state.InstalledDigest == s.runningDigest && state.InstalledChannel != "" {
-		installed.Channel = state.InstalledChannel
-	}
-	current, err := sylveupdate.FileDigest(s.executable)
-	if err != nil || current != s.runningDigest {
+func (s *Service) inspectInstalled(ctx context.Context) sylveupdate.Installed {
+	installed := sylveupdate.Installed{Mode: "unknown", Version: s.version, Commit: s.commit, BuiltAt: s.builtAt, SHA256: s.runningDigest, Path: s.executable}
+	info, err := os.Stat(s.executable)
+	if err != nil || !os.SameFile(info, s.executableInfo) || info.Size() != s.executableInfo.Size() || !info.ModTime().Equal(s.executableInfo.ModTime()) {
 		installed.Reason = "sylve_executable_changed_restart_required"
 		return installed
 	}
@@ -215,7 +193,6 @@ func (s *Service) inspectInstalled(ctx context.Context, state models.HostUpdateS
 			return installed
 		}
 		installed.Mode = "package"
-		installed.Channel = "package"
 		installed.Reason = "sylve_package_managed"
 		return installed
 	}
@@ -224,7 +201,7 @@ func (s *Service) inspectInstalled(ctx context.Context, state models.HostUpdateS
 		installed.Reason = "sylve_package_ownership_conflict"
 		return installed
 	}
-	if s.executable != "/usr/local/sbin/sylve" {
+	if s.executable != s.standalonePath {
 		installed.Reason = "sylve_standalone_path_required"
 		return installed
 	}
@@ -241,10 +218,10 @@ func (s *Service) Get(ctx context.Context) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	view := View{HostUpdateState: state, History: []models.HostUpdateOperation{}, AuditStale: true}
+	view := View{HostUpdateState: state, AuditStale: true, BootEnvironmentSupported: s.bootEnvironments}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	view.Sylve = s.installed(ctx, state)
+	view.Sylve = s.installed(ctx)
 	view.ReleaseAvailable = releaseAvailable(state, view.Sylve)
 	var active models.HostUpdateOperation
 	if err = s.DB.Where("active IS NOT NULL").Limit(1).Find(&active).Error; err != nil {
@@ -276,10 +253,12 @@ func (s *Service) Get(ctx context.Context) (View, error) {
 			}
 		}
 	}
+	// While a job runs, the last stored results still describe the stored inventory.
+	current := view.Ready || view.ActiveJob != nil
 	hash := pkgmanager.InventoryDigest(view.Inventory)
 	now := time.Now().UTC()
-	view.UpdatesChecked = view.Ready && state.CheckInventoryHash == hash && state.CheckError == "" && monitoringResultFresh(state, state.CheckedAt, now)
-	view.AuditStale = !view.Ready || state.AuditInventoryHash != pkgmanager.AuditInventoryDigest(view.Inventory) || state.AuditError != "" || !monitoringResultFresh(state, state.AuditAt, now)
+	view.UpdatesChecked = current && state.CheckInventoryHash == hash && state.CheckError == "" && monitoringResultFresh(state, state.CheckedAt, now)
+	view.AuditStale = !current || state.AuditInventoryHash != pkgmanager.AuditInventoryDigest(view.Inventory) || state.AuditError != "" || !monitoringResultFresh(state, state.AuditAt, now)
 	findings := map[string]pkgmanager.AuditPackage{}
 	for _, pkg := range state.Audit.Packages {
 		findings[pkg.Name] = pkg
@@ -298,30 +277,36 @@ func (s *Service) Get(ctx context.Context) (View, error) {
 			pkg.Advisories = finding.Advisories
 		}
 	}
-	bootID, err := s.command(ctx, "/sbin/sysctl", "-n", "kern.boottime")
-	bootID = bootIdentity(bootID)
-	view.RebootRecommended = state.RebootBootID != "" && (err != nil || bootID == "" || bootID == state.RebootBootID)
-	_, err = s.command(ctx, "/sbin/bectl", "check")
-	view.BootEnvironmentSupported = err == nil
-	if err = s.DB.Where("active IS NULL").Order("id DESC").Limit(20).Find(&view.History).Error; err != nil {
-		return view, err
-	}
 	return view, nil
+}
+
+type HistoryPage struct {
+	LastPage int                          `json:"last_page"`
+	Data     []models.HostUpdateOperation `json:"data"`
+}
+
+func (s *Service) History(ctx context.Context, page, size int, sortField, sortDir string) (HistoryPage, error) {
+	page, size = max(page, 1), min(max(size, 1), 500)
+	column, ok := map[string]string{"id": "id", "action": "action", "status": "status", "actor": "actor", "createdAt": "created_at", "finishedAt": "finished_at"}[sortField]
+	if !ok {
+		column = "id"
+	}
+	direction := "DESC"
+	if sortDir == "asc" {
+		direction = "ASC"
+	}
+	var total int64
+	if err := s.DB.WithContext(ctx).Model(&models.HostUpdateOperation{}).Where("active IS NULL").Count(&total).Error; err != nil {
+		return HistoryPage{}, err
+	}
+	history := HistoryPage{LastPage: max(1, int((total+int64(size)-1)/int64(size))), Data: []models.HostUpdateOperation{}}
+	err := s.DB.WithContext(ctx).Where("active IS NULL").Order(column + " " + direction).Offset((page - 1) * size).Limit(size).Find(&history.Data).Error
+	return history, err
 }
 
 func code(err error) string {
 	value, _, _ := strings.Cut(err.Error(), ":")
 	return strings.TrimSpace(value)
-}
-
-var bootTimePattern = regexp.MustCompile(`^\{ sec = ([0-9]+), usec = ([0-9]+) \}`)
-
-func bootIdentity(output string) string {
-	fields := bootTimePattern.FindStringSubmatch(output)
-	if fields == nil {
-		return ""
-	}
-	return fields[1] + ":" + fields[2]
 }
 
 func requireIdle(database *gorm.DB) error {
@@ -390,7 +375,6 @@ func (s *Service) SetReleaseChannel(ctx context.Context, channel string) (models
 	if err != nil {
 		return state, err
 	}
-	s.releaseAttemptAt = time.Time{}
 	return s.state()
 }
 
@@ -437,19 +421,14 @@ func (s *Service) Start(ctx context.Context, action string, input Request, actor
 		if time.Now().After(plan.ExpiresAt) {
 			return Job{}, fmt.Errorf("host_update_plan_stale")
 		}
-		if plan.Kind == "packages" && len(plan.Transaction.Changes) == 0 {
-			return Job{}, fmt.Errorf("no_package_changes")
-		}
-	}
-	channel := ""
-	if strings.HasPrefix(action, "sylve-") {
-		state, err := s.state()
-		if err != nil {
-			return Job{}, err
-		}
-		channel = state.ReleaseChannel
-		if applying && (plan.Release == nil || plan.Release.Channel != channel) {
-			return Job{}, fmt.Errorf("host_update_plan_stale")
+		if plan.Kind == "sylve" {
+			state, err := s.state()
+			if err != nil {
+				return Job{}, err
+			}
+			if plan.Release == nil || plan.Release.Channel != state.ReleaseChannel {
+				return Job{}, fmt.Errorf("host_update_plan_stale")
+			}
 		}
 	}
 	one := uint(1)
@@ -460,7 +439,6 @@ func (s *Service) Start(ctx context.Context, action string, input Request, actor
 		Status:          "queued",
 		Phase:           "queued",
 		PlanID:          input.PlanID,
-		Channel:         channel,
 		Actor:           actor,
 		BootEnvironment: input.BootEnvironment,
 	}
@@ -558,13 +536,15 @@ func (s *Service) phase(op *models.HostUpdateOperation, phase string) error {
 	return s.DB.Model(op).Updates(map[string]any{"phase": phase, "status": "running"}).Error
 }
 
+const rebootNotice = " Host reboot recommended."
+
 func (s *Service) finish(op models.HostUpdateOperation, cause error, message string) {
 	now := time.Now().UTC()
 	status, phase, failure := "success", "completed", ""
 	if cause != nil {
 		status, phase, failure = "failed", "failed", pkgmanager.Redact(cause.Error())
 	}
-	err := s.DB.Transaction(func(tx *gorm.DB) error {
+	finalize := func(tx *gorm.DB) error {
 		updates := map[string]any{"active": nil, "status": status, "phase": phase, "error": failure, "finished_at": now}
 		if message != "" {
 			updates["result"] = message
@@ -577,11 +557,20 @@ func (s *Service) finish(op models.HostUpdateOperation, cause error, message str
 			severity, title := "info", "Host update completed"
 			if cause != nil {
 				severity, title = "warning", "Host update failed"
+			} else if strings.Contains(message, rebootNotice) {
+				severity, title = "warning", "Host update completed, reboot recommended"
 			}
 			return s.event(tx, "operation", title, strings.TrimSpace(message+" "+failure), severity, op.ID, "history")
 		}
 		return nil
-	})
+	}
+	// A failed write would leave the operation active and block every later one
+	// until Sylve restarts.
+	err := s.DB.Transaction(finalize)
+	for attempt := 1; err != nil && attempt < 3; attempt++ {
+		time.Sleep(time.Duration(attempt) * time.Second)
+		err = s.DB.Transaction(finalize)
+	}
 	if err != nil {
 		logger.L.Error().Err(err).Msg("host_update_completion_failed")
 		return
@@ -637,13 +626,6 @@ func (s *Service) execute(op models.HostUpdateOperation, selection []string) {
 	}
 	if err != nil {
 		_, _ = fmt.Fprintln(log, pkgmanager.Redact(err.Error()))
-		if op.Action == "audit" || op.Action == "check" {
-			_ = s.failedCheck(op.Action, err)
-		}
-	} else if op.Action == "check" {
-		if err = s.successfulCheck(); err != nil {
-			logger.L.Warn().Err(err).Msg("host_update_health_persistence_failed")
-		}
 	}
 	s.finish(op, err, "")
 }
@@ -671,60 +653,17 @@ func (s *Service) readOperation(ctx context.Context, op *models.HostUpdateOperat
 	if err != nil {
 		return err
 	}
-	if op.Action == "sylve-preview" {
+	switch op.Action {
+	case "sylve-preview":
 		return s.releasePreview(ctx, op, state)
+	case "check":
+		return errors.Join(s.monitor(ctx, op, state, log), s.checkRelease(ctx))
+	case "audit":
+		return s.monitor(ctx, op, state, log)
 	}
-	if err = s.phase(op, "reading_inventory"); err != nil {
-		return err
-	}
-	client := s.client(log)
-	if err = s.probe(); err != nil {
-		if op.Action == "check" {
-			return errors.Join(err, s.checkRelease(ctx))
-		}
-		return err
-	}
-	inventory, err := client.Inventory(ctx)
+	client, inventory, err := s.inspect(ctx, op, state, log)
 	if err != nil {
-		if op.Action == "check" {
-			return errors.Join(err, s.checkRelease(ctx))
-		}
 		return err
-	}
-	now := time.Now().UTC()
-	if err = s.DB.Model(&state).Select("Inventory", "InventoryAt", "LastAttemptAt").Updates(&models.HostUpdateState{Inventory: inventory, InventoryAt: &now, LastAttemptAt: &now}).Error; err != nil {
-		return err
-	}
-	info, hostErr := client.InspectHost(ctx, inventory)
-	if hostErr != nil {
-		if op.Action == "check" {
-			if err := s.DB.Model(&state).Update("check_error", hostErr.Error()).Error; err != nil {
-				return err
-			}
-			releaseErr := s.checkRelease(ctx)
-			if code(hostErr) == "host_updates_require_pkgbase" {
-				return releaseErr
-			}
-			return errors.Join(hostErr, releaseErr)
-		}
-		return hostErr
-	}
-	client.HostSystem = &info
-	client.SylveVersion = s.version
-	installed := s.installed(ctx, state)
-	if installed.Mode != "package" {
-		client.PreserveExecutable = s.executable
-	}
-	if op.Action == "check" || op.Action == "audit" {
-		auditErr := s.auditPackages(ctx, op, client, inventory)
-		if op.Action == "audit" {
-			return auditErr
-		}
-		packageErr := s.checkPackages(ctx, op, client, inventory)
-		if packageErr != nil {
-			_ = s.DB.Model(&state).Update("check_error", pkgmanager.Redact(packageErr.Error())).Error
-		}
-		return errors.Join(auditErr, packageErr, s.checkRelease(ctx))
 	}
 	if len(selection) > 0 {
 		seen := map[string]bool{}
@@ -775,7 +714,7 @@ func (s *Service) readOperation(ctx context.Context, op *models.HostUpdateOperat
 		Kind:           "packages",
 		Selection:      selection,
 		Transaction:    plan,
-		Host:           info,
+		Host:           *client.HostSystem,
 		InventoryHash:  pkgmanager.InventoryDigest(inventory),
 		RepositoryHash: repoHash,
 		CatalogHash:    catalogHash,
@@ -789,13 +728,69 @@ func (s *Service) readOperation(ctx context.Context, op *models.HostUpdateOperat
 	return s.DB.Model(op).Update("plan_id", stored.ID).Error
 }
 
+func (s *Service) inspect(ctx context.Context, op *models.HostUpdateOperation, state models.HostUpdateState, log io.Writer) (*pkgmanager.Client, []pkgmanager.Package, error) {
+	if err := s.phase(op, "reading_inventory"); err != nil {
+		return nil, nil, err
+	}
+	client := s.client(log)
+	if err := s.probe(); err != nil {
+		return nil, nil, err
+	}
+	inventory, err := client.Inventory(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	now := time.Now().UTC()
+	if err = s.DB.Model(&state).Select("Inventory", "InventoryAt", "LastAttemptAt").Updates(&models.HostUpdateState{Inventory: inventory, InventoryAt: &now, LastAttemptAt: &now}).Error; err != nil {
+		return nil, nil, err
+	}
+	info, err := client.InspectHost(ctx, inventory)
+	if err != nil {
+		return nil, nil, err
+	}
+	client.HostSystem = &info
+	client.SylveVersion = s.version
+	if s.installed(ctx).Mode != "package" {
+		client.PreserveExecutable = s.executable
+	}
+	return client, inventory, nil
+}
+
+// monitor runs a check or an audit. Inspection, audit and package failures are
+// stored in their own columns, so a failing vulnerability feed doesn't hide
+// available updates.
+func (s *Service) monitor(ctx context.Context, op *models.HostUpdateOperation, state models.HostUpdateState, log io.Writer) error {
+	client, inventory, err := s.inspect(ctx, op, state, log)
+	if err != nil {
+		column := "check_error"
+		if op.Action == "audit" {
+			column = "audit_error"
+		}
+		s.storeError(column, err)
+		if op.Action == "check" && code(err) == "host_updates_require_pkgbase" {
+			return nil
+		}
+	} else {
+		err = s.auditPackages(ctx, op, client, inventory)
+		s.storeError("audit_error", err)
+		if op.Action == "check" {
+			packageErr := s.checkPackages(ctx, op, client, inventory)
+			s.storeError("check_error", packageErr)
+			err = errors.Join(err, packageErr)
+		}
+	}
+	if healthErr := s.recordHealth(op.Action, err); healthErr != nil {
+		logger.L.Warn().Err(healthErr).Msg("host_update_health_persistence_failed")
+	}
+	return err
+}
+
 func (s *Service) auditPackages(ctx context.Context, op *models.HostUpdateOperation, client *pkgmanager.Client, inventory []pkgmanager.Package) error {
 	if err := s.phase(op, "auditing"); err != nil {
 		return err
 	}
 	report, err := client.Audit(ctx, inventory, true)
 	if err != nil {
-		_ = s.DB.Model(&models.HostUpdateState{ID: 1}).Update("audit_error", pkgmanager.Redact(err.Error())).Error
 		return err
 	}
 	return s.storeAudit(inventory, report, op.ID)

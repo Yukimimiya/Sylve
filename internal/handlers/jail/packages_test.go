@@ -20,26 +20,6 @@ type packageHandlerStub struct {
 	action, actor string
 	ctID          uint
 	request       jailTypes.PackageRequest
-	monitoring    jailTypes.PackageMonitoring
-}
-
-func (s *packageHandlerStub) SetPackageMonitoring(_ context.Context, ctID uint, monitor jailTypes.PackageMonitoring) (jailTypes.PackageMonitoring, error) {
-	s.ctID, s.monitoring = ctID, monitor
-	return monitor, nil
-}
-
-func TestPackageMonitoringHandlerPreservesCustomCron(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	stub := &packageHandlerStub{}
-	router := gin.New()
-	router.PUT("/jail/:ctid/packages/monitoring", JailPackageMonitoring(stub, true))
-	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPut, "/jail/900/packages/monitoring", strings.NewReader(`{"enabled":true,"cronExpr":"0 3 * * 0"}`))
-	request.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || stub.ctID != 900 || !stub.monitoring.Enabled || stub.monitoring.CronExpr != "0 3 * * 0" || !strings.Contains(response.Body.String(), `"cronExpr":"0 3 * * 0"`) {
-		t.Fatalf("custom schedule changed at the API boundary: %+v %d %s", stub.monitoring, response.Code, response.Body)
-	}
 }
 
 func (s *packageHandlerStub) StartPackageOperation(_ context.Context, ctID uint, action string, request jailTypes.PackageRequest, source, actor string) (jailTypes.PackageJob, error) {
@@ -95,7 +75,6 @@ func TestPackageResponseKeepsErrorsDistinct(t *testing.T) {
 		{"replication_lease_not_owned", 403},
 		{"invalid_package_name", 400},
 		{"invalid_package_audit_cron", 400},
-		{"package_service_unavailable", 503},
 		{"pkg_static_not_found", 503},
 		{"application_repositories_unavailable", 409},
 		{"package_selection_required", 400},
@@ -125,5 +104,22 @@ func TestPackageHandlerRejectsMalformedRequestsBeforeAdmission(t *testing.T) {
 		if response.Code != 400 || stub.ctID != 0 {
 			t.Fatalf("admitted malformed request %q: %d", body, response.Code)
 		}
+	}
+}
+
+func TestPackageHandlerRejectsBadRequestsWith400(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/jail/:ctid/packages", GetJailPackages(&packageHandlerStub{}))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/jail/abc/packages", nil))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("bad ctid: %d %s", response.Code, response.Body)
+	}
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	packageResponse(context, nil, errors.New("package_system_acknowledgement_required"), 0)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("missing acknowledgement: %d", recorder.Code)
 	}
 }

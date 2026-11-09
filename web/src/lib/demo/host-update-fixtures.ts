@@ -5,7 +5,9 @@ import {
 } from '$lib/types/system/updates';
 import type { JailPackage } from '$lib/types/jail/packages';
 
-const states = new Map<string, HostUpdates>();
+type DemoState = HostUpdates & { history: HostUpdateJob[] };
+
+const states = new Map<string, DemoState>();
 const jobs = new Map<
 	number,
 	{ node: string; job: HostUpdateJob; finish: number; applied?: number }
@@ -14,7 +16,7 @@ let operationID = 9000;
 const now = () => new Date().toISOString();
 const emptyPlan = () => ({ changes: [], download: '', space: '', digest: '' });
 
-function initial(node: string): HostUpdates {
+function initial(node: string): DemoState {
 	const pkg = (
 		name: string,
 		version: string,
@@ -66,7 +68,6 @@ function initial(node: string): HostUpdates {
 		reason: supported ? '' : 'host_updates_require_pkgbase',
 		updatesChecked: false,
 		auditStale: true,
-		rebootRecommended: false,
 		bootEnvironmentSupported: supported,
 		sylve: {
 			mode: packaged ? 'package' : 'standalone',
@@ -74,7 +75,6 @@ function initial(node: string): HostUpdates {
 			version: '0.3.1',
 			commit: 'a'.repeat(40),
 			builtAt: '2026-10-19T12:00:00Z',
-			channel: packaged ? 'package' : 'rolling',
 			sha256: '1'.repeat(64),
 			path: '/usr/local/sbin/sylve'
 		},
@@ -157,7 +157,7 @@ function checkRelease(view: HostUpdates) {
 		(view.releaseChannel === 'rolling' || view.sylve.version !== view.release.version);
 }
 
-function settle(node: string, view: HostUpdates) {
+function settle(node: string, view: DemoState) {
 	const entry = view.activeJob && jobs.get(view.activeJob.id);
 	if (!entry || entry.node !== node || Date.now() < entry.finish) return;
 	const job = entry.job;
@@ -182,7 +182,6 @@ function settle(node: string, view: HostUpdates) {
 				pkg.version = change.to;
 				pkg.available = '';
 			}
-			if (change.name.startsWith('FreeBSD-')) view.rebootRecommended = true;
 		}
 		view.available = emptyPlan();
 		view.updatesChecked = false;
@@ -195,7 +194,6 @@ function settle(node: string, view: HostUpdates) {
 			version: target.version,
 			commit: target.commit,
 			builtAt: target.builtAt,
-			channel: target.channel,
 			sha256: target.sha256
 		};
 		view.releaseAvailable = false;
@@ -229,6 +227,14 @@ export function demoHostUpdates(
 		data: { status: 'error', message }
 	});
 	if (!path && method === 'GET') return success(view);
+	if (path === 'history' && method === 'GET') {
+		const size = Math.max(1, Number(query.get('size') || 100));
+		const page = Math.max(1, Number(query.get('page') || 1));
+		return success({
+			last_page: Math.max(1, Math.ceil(view.history.length / size)),
+			data: view.history.slice((page - 1) * size, page * size)
+		});
+	}
 	if (path === 'sylve/release' && method === 'GET') {
 		if (view.sylve.mode !== 'standalone') return failure(view.sylve.reason);
 		checkRelease(view);
@@ -341,7 +347,6 @@ export function demoHostUpdates(
 		phase: action.endsWith('-apply') ? 'applying' : 'solving',
 		planId: plan?.id ?? '',
 		plan,
-		channel: action.startsWith('sylve-') ? view.releaseChannel : '',
 		actor: 'demo-admin',
 		error: '',
 		result: '',

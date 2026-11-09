@@ -28,50 +28,12 @@ func (s *Service) backupRunScopes(job *clusterModels.BackupJob, sourceDataset, d
 		for _, vmSource := range vmSourceDatasets {
 			scopes = append(scopes, backupScope{
 				sourceDataset: vmSource,
-				destSuffix:    s.backupDestSuffixForVMSource(strings.TrimSpace(job.DestSuffix), vmSource),
+				destSuffix:    vmDestSuffixForSource(job.DestSuffix, vmSource),
 			})
 		}
 		return scopes
 	}
 	return []backupScope{{sourceDataset: sourceDataset, destSuffix: destSuffix}}
-}
-
-func snapshotGUIDKey(info SnapshotInfo) string {
-	return strings.TrimSpace(info.Guid)
-}
-
-func latestCommonBackupSnapshot(local, remote []SnapshotInfo, snapPrefix string) (SnapshotInfo, bool) {
-	remoteGUIDs := make(map[string]struct{})
-	for _, r := range remote {
-		short := strings.TrimPrefix(snapshotShortName(r), "@")
-		if !isBKSnapshotShortName(short, snapPrefix) {
-			continue
-		}
-		if g := snapshotGUIDKey(r); g != "" {
-			remoteGUIDs[g] = struct{}{}
-		}
-	}
-
-	var best SnapshotInfo
-	found := false
-	for _, l := range local {
-		short := strings.TrimPrefix(snapshotShortName(l), "@")
-		if !isBKSnapshotShortName(short, snapPrefix) {
-			continue
-		}
-
-		guid := snapshotGUIDKey(l)
-		if guid == "" {
-			continue
-		}
-		if _, common := remoteGUIDs[guid]; !common {
-			continue
-		}
-
-		best = l
-		found = true
-	}
-	return best, found
 }
 
 func latestCommonBackupSnapshotsByDataset(
@@ -93,14 +55,11 @@ func latestCommonBackupSnapshotsByDataset(
 		if !isBKSnapshotShortName(short, snapPrefix) {
 			continue
 		}
-		guid := snapshotGUIDKey(snapshot)
+		guid := strings.TrimSpace(snapshot.Guid)
 		if guid == "" {
 			continue
 		}
 		dataset := snapshotDatasetName(snapshot.Name)
-		if dataset == "" {
-			dataset = normalizeDatasetPath(snapshot.Dataset)
-		}
 		if !datasetWithinRoot(remoteRoot, dataset) {
 			continue
 		}
@@ -119,14 +78,11 @@ func latestCommonBackupSnapshotsByDataset(
 		if !isBKSnapshotShortName(short, snapPrefix) {
 			continue
 		}
-		guid := snapshotGUIDKey(snapshot)
+		guid := strings.TrimSpace(snapshot.Guid)
 		if guid == "" {
 			continue
 		}
 		dataset := snapshotDatasetName(snapshot.Name)
-		if dataset == "" {
-			dataset = normalizeDatasetPath(snapshot.Dataset)
-		}
 		if !datasetWithinRoot(localRoot, dataset) {
 			continue
 		}
@@ -157,10 +113,7 @@ func foreignTargetSnapshots(
 	sourceBySuffixAndGUID := make(map[string]struct{})
 	for _, snapshot := range local {
 		dataset := snapshotDatasetName(snapshot.Name)
-		if dataset == "" {
-			dataset = normalizeDatasetPath(snapshot.Dataset)
-		}
-		guid := snapshotGUIDKey(snapshot)
+		guid := strings.TrimSpace(snapshot.Guid)
 		if guid == "" || !datasetWithinRoot(sourceRoot, dataset) {
 			continue
 		}
@@ -172,10 +125,7 @@ func foreignTargetSnapshots(
 	for _, snapshot := range remote {
 		name := strings.TrimSpace(snapshot.Name)
 		dataset := snapshotDatasetName(name)
-		if dataset == "" {
-			dataset = normalizeDatasetPath(snapshot.Dataset)
-		}
-		guid := snapshotGUIDKey(snapshot)
+		guid := strings.TrimSpace(snapshot.Guid)
 		owned := false
 		if guid != "" && datasetWithinRoot(targetRoot, dataset) {
 			suffix := relativeDatasetSuffix(targetRoot, dataset)
@@ -196,15 +146,17 @@ func foreignTargetSnapshots(
 	return foreign
 }
 
-// filterToleratedLegacyTargetSnapshots removes pre-c1 snapshots that the old
-// backup protocol associated with this exact job scope by name from a
-// non-destructive foreign-snapshot preflight result. It does not produce
-// ownership proof and must never authorize retention cleanup or deletion.
-func filterToleratedLegacyTargetSnapshots(
+// filterToleratedTargetSnapshots removes pre-c1 snapshots that the old
+// backup protocol associated with this exact job scope by name, and c1 child
+// snapshots left by an interrupted prune, from a non-destructive
+// foreign-snapshot preflight result. It does not produce ownership proof and
+// must never authorize retention cleanup or deletion.
+func filterToleratedTargetSnapshots(
 	job *clusterModels.BackupJob,
 	sourceRoot string,
 	targetRoot string,
 	scopes []backupScope,
+	remote []SnapshotInfo,
 	foreign []string,
 ) []string {
 	if job == nil || job.ID == 0 {
@@ -233,6 +185,13 @@ func filterToleratedLegacyTargetSnapshots(
 		return foreign
 	}
 
+	rootGenerations := make(map[string]struct{})
+	for _, snapshot := range remote {
+		if snapshotDatasetName(snapshot.Name) == targetRoot {
+			rootGenerations[backupRetentionGeneration(snapshot.Name)] = struct{}{}
+		}
+	}
+
 	jobPrefix := backupSnapshotPrefixForJob(job.ID)
 	remaining := make([]string, 0, len(foreign))
 	for _, candidate := range foreign {
@@ -240,15 +199,20 @@ func filterToleratedLegacyTargetSnapshots(
 		dataset := snapshotDatasetName(name)
 		shortName := strings.TrimPrefix(snapshotShortName(SnapshotInfo{Name: name}), "@")
 		_, c1, err := backupCommitJobIDFromSnapshot(shortName)
-		if !datasetWithinRoot(targetRoot, dataset) ||
-			!isBKSnapshotShortName(shortName, jobPrefix) || err != nil || c1 {
+		if !datasetWithinRoot(targetRoot, dataset) || !isBKSnapshotShortName(shortName, jobPrefix) || err != nil {
 			remaining = append(remaining, candidate)
+			continue
+		}
+		if c1 {
+			if _, rootHasIt := rootGenerations[shortName]; rootHasIt || dataset == targetRoot {
+				remaining = append(remaining, candidate)
+			}
 		}
 	}
 	return remaining
 }
 
-func buildLocalRetentionPruneCandidates(snapshots []SnapshotInfo, keepCount int, protect map[string]struct{}, snapPrefix string) []string {
+func buildRetentionPruneCandidates(snapshots []SnapshotInfo, keepCount int, protect map[string]struct{}, snapPrefix string) []string {
 	if keepCount < 0 {
 		keepCount = 0
 	}
@@ -263,9 +227,6 @@ func buildLocalRetentionPruneCandidates(snapshots []SnapshotInfo, keepCount int,
 			continue
 		}
 		dataset := snapshotDatasetName(name)
-		if dataset == "" {
-			dataset = normalizeDatasetPath(snapshot.Dataset)
-		}
 		grouped[dataset] = append(grouped[dataset], name)
 	}
 
@@ -357,7 +318,6 @@ func (s *Service) findForeignTargetSnapshots(
 		activeDataset,
 		unmatched,
 		scopes,
-		activeDataset,
 		remoteSnaps,
 	)
 	if err != nil {
@@ -371,11 +331,12 @@ func (s *Service) findForeignTargetSnapshots(
 		activeDataset,
 		proofs.Target,
 	)
-	return filterToleratedLegacyTargetSnapshots(
+	return filterToleratedTargetSnapshots(
 		job,
 		sourceDataset,
 		activeDataset,
 		scopes,
+		remoteSnaps,
 		foreign,
 	), nil
 }

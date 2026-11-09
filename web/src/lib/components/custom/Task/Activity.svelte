@@ -13,6 +13,7 @@
 	import { reload } from '$lib/stores/api.svelte';
 	import type { ClusterNode } from '$lib/types/cluster/cluster';
 	import type { APIResponse } from '$lib/types/common';
+	import { containerTitle } from '$lib/types/container/container';
 	import {
 		isLifecycleTaskActive,
 		type ActiveLifecycleGuest,
@@ -106,7 +107,9 @@
 				names: {
 					vm: new Map(vms.map((vm) => [vm.rid, vm.name])),
 					jail: new Map(jails.map((jail) => [jail.ctId, jail.name])),
-					container: new Map(containers.map((container) => [container.ocId, container.name])),
+					container: new Map(
+						containers.map((container) => [container.ocId, containerTitle(container)])
+					),
 					'jail-template': new Map(jailTemplates.map((template) => [template.id, template.name])),
 					'vm-template': new Map(vmTemplates.map((template) => [template.id, template.name]))
 				}
@@ -328,6 +331,8 @@
 
 	function lifecycleActionLabel(task: LifecycleTask): string {
 		if (task.action === 'convert') return 'Create Template';
+		if (task.action === 'upgrade') return 'Update Image';
+		if (task.action === 'upgrade-stack') return 'Update Stack';
 		if (task.action === 'create' && task.guestType.endsWith('-template')) {
 			return 'Create from Template';
 		}

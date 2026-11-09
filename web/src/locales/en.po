@@ -248,6 +248,7 @@ msgid "Discord"
 msgstr "Discord"
 
 #: src/lib/components/custom/Container/Catalog.svelte
+#: src/lib/components/custom/Container/Catalog.svelte
 #: src/routes/[node]/+layout.svelte
 #: src/routes/datacenter/+layout.svelte
 msgid "Help"
@@ -445,6 +446,7 @@ msgstr "Jail - Update Description"
 
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Form.svelte
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Form.svelte
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Restore.svelte
 #: src/lib/components/custom/Jail/Template/Create.svelte
 #: src/lib/components/custom/Jail/Template/Create.svelte
@@ -453,6 +455,7 @@ msgstr "Jail - Update Description"
 #: src/lib/components/skeleton/BottomPanel.svelte
 #: src/lib/components/skeleton/TreeViewCluster.svelte
 #: src/routes/[node]/jail/[ctid]/console/+page.svelte
+#: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/replication/policies/+page.svelte
 msgid "Jail"
 msgstr "Jail"
@@ -524,6 +527,8 @@ msgstr "Bad Request"
 #: src/lib/components/skeleton/BottomPanel.svelte
 #: src/routes/[node]/services/dynamic-dns/+page.svelte
 #: src/routes/datacenter/backups/events/+page.svelte
+#: src/routes/datacenter/backups/events/+page.svelte
+#: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 #: src/routes/datacenter/replication/policies/+page.svelte
@@ -572,6 +577,7 @@ msgstr "User"
 #: src/routes/[node]/network/firewall/traffic/+page.svelte
 #: src/routes/[node]/storage/samba/audit-logs/+page.svelte
 #: src/routes/[node]/system/updates/history/+page.svelte
+#: src/routes/datacenter/backups/events/+page.svelte
 msgid "Action"
 msgstr "Action"
 
@@ -600,7 +606,6 @@ msgstr "Action"
 #: src/routes/[node]/system/updates/packages/+page.svelte
 #: src/routes/[node]/vm/[rid]/network/+page.svelte
 #: src/routes/[node]/vm/[rid]/summary/+page.svelte
-#: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/backups/targets/+page.svelte
 #: src/routes/datacenter/cluster/+page.svelte
@@ -825,7 +830,9 @@ msgstr "Failed to create note"
 
 #: src/lib/components/custom/Container/Create.svelte
 #: src/lib/components/custom/Container/Create.svelte
+#: src/lib/components/custom/Container/GuestInformation.svelte
 #: src/lib/components/custom/Container/NetworkForm.svelte
+#: src/lib/components/custom/Container/Spec.svelte
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Form.svelte
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Page.svelte
 #: src/lib/components/custom/DataCenter/Backups/Targets/Form.svelte
@@ -859,6 +866,7 @@ msgstr "Failed to create note"
 #: src/lib/components/skeleton/ResourceTreeToolbar.svelte
 #: src/lib/components/skeleton/ResourceTreeToolbar.svelte
 #: src/lib/components/skeleton/ResourceTreeToolbar.svelte
+#: src/lib/components/skeleton/TreeViewCluster.svelte
 #: src/routes/[node]/authentication/groups/+page.svelte
 #: src/routes/[node]/authentication/groups/+page.svelte
 #: src/routes/[node]/authentication/users/local/+page.svelte
@@ -945,6 +953,7 @@ msgstr "View"
 #: src/lib/components/skeleton/BottomPanel.svelte
 #: src/lib/components/skeleton/BottomPanel.svelte
 #: src/lib/components/skeleton/BottomPanel.svelte
+#: src/lib/components/skeleton/TreeViewCluster.svelte
 #: src/lib/components/skeleton/TreeViewCluster.svelte
 #: src/lib/components/skeleton/TreeViewCluster.svelte
 #: src/routes/[node]/authentication/groups/+page.svelte
@@ -1627,6 +1636,7 @@ msgstr "Property"
 
 #: src/lib/components/custom/Cluster/JoinInformation.svelte
 #: src/lib/components/custom/Container/Properties.svelte
+#: src/lib/components/custom/Container/Spec.svelte
 #: src/routes/[node]/container/[ocid]/hardware/+page.svelte
 #: src/routes/[node]/directory-services/active-directory/+page.svelte
 #: src/routes/[node]/directory-services/kerberos/settings/+page.svelte
@@ -1654,6 +1664,7 @@ msgstr "Leader Node"
 #: src/lib/components/custom/Dialog/ValueViewer.svelte
 #: src/lib/components/skeleton/BottomPanel.svelte
 #: src/routes/[node]/services/dynamic-dns/+page.svelte
+#: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
@@ -1883,11 +1894,13 @@ msgstr "<0/> Cut"
 
 #: src/lib/components/custom/FileExplorer/GridView.svelte
 #: src/lib/components/custom/FileExplorer/ListView.svelte
+#: src/lib/components/skeleton/TreeViewCluster.svelte
 msgid "<0/> Rename"
 msgstr "<0/> Rename"
 
 #: src/lib/components/custom/FileExplorer/GridView.svelte
 #: src/lib/components/custom/FileExplorer/ListView.svelte
+#: src/lib/components/skeleton/TreeViewCluster.svelte
 msgid "<0/> Delete"
 msgstr "<0/> Delete"
 
@@ -1913,6 +1926,7 @@ msgstr "Enter new name"
 
 #: src/lib/components/custom/FileExplorer/RenameModal.svelte
 #: src/lib/components/custom/FileExplorer/RenameModal.svelte
+#: src/lib/components/skeleton/TreeViewCluster.svelte
 #: src/routes/[node]/storage/samba/audit-logs/+page.svelte
 msgid "Rename"
 msgstr "Rename"
@@ -2950,23 +2964,19 @@ msgid "Delete Volume(s)"
 msgstr "Delete Volume(s)"
 
 #: src/routes/[node]/services/dynamic-dns/+page.svelte
-#: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 msgid "Error copied to clipboard"
 msgstr "Error copied to clipboard"
 
 #: src/routes/[node]/services/dynamic-dns/+page.svelte
-#: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 msgid "Failed to copy error"
 msgstr "Failed to copy error"
 
 #. 0: task.guestId
 #. 0: task.guestId
-#. 0: jailMatch[1]
 #: src/lib/components/custom/Jail/Create/CreationProgress.svelte
 #: src/lib/components/custom/Jail/Create/CreationProgress.svelte
-#: src/routes/datacenter/backups/events/+page.svelte
 msgid "Jail {0}"
 msgstr "Jail {0}"
 
@@ -2999,10 +3009,6 @@ msgstr "Failed"
 msgid "Interrupted"
 msgstr "Interrupted"
 
-#: src/routes/datacenter/backups/events/+page.svelte
-msgid "Failed to load event progress"
-msgstr "Failed to load event progress"
-
 #: src/lib/components/custom/Container/Spec.svelte
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Page.svelte
 #: src/lib/components/custom/Jail/Create/Storage.svelte
@@ -3019,8 +3025,6 @@ msgstr "Failed to load event progress"
 #: src/routes/[node]/network/firewall/traffic/+page.svelte
 #: src/routes/[node]/network/mdns/records/+page.svelte
 #: src/routes/[node]/services/dynamic-dns/+page.svelte
-#: src/routes/datacenter/backups/events/+page.svelte
-#: src/routes/datacenter/backups/events/+page.svelte
 msgid "Source"
 msgstr "Source"
 
@@ -3043,8 +3047,6 @@ msgstr "Target"
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Form.svelte
 #: src/lib/components/custom/Disk/SmartSelfTest.svelte
 #: src/lib/components/custom/Network/Routes/Form.svelte
-#: src/routes/datacenter/backups/events/+page.svelte
-#: src/routes/datacenter/backups/events/+page.svelte
 msgid "Mode"
 msgstr "Mode"
 
@@ -3065,15 +3067,10 @@ msgstr "Backup"
 #: src/lib/components/custom/System/Updates/Operation.svelte
 #: src/routes/[node]/system/updates/history/+page.svelte
 #: src/routes/datacenter/backups/events/+page.svelte
-#: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 msgid "Completed"
 msgstr "Completed"
-
-#: src/routes/datacenter/backups/events/+page.svelte
-msgid "Backup Target Diverged"
-msgstr "Backup Target Diverged"
 
 #: src/routes/datacenter/backups/events/+page.svelte
 msgid "All Jobs"
@@ -3089,13 +3086,8 @@ msgid "Select node"
 msgstr "Select node"
 
 #: src/lib/components/custom/Jail/Create/CreateJail.svelte
-#: src/routes/datacenter/backups/events/+page.svelte
 msgid "View Progress"
 msgstr "View Progress"
-
-#: src/routes/datacenter/backups/events/+page.svelte
-msgid "Event Progress <0/>"
-msgstr "Event Progress <0/>"
 
 #: src/routes/datacenter/backups/events/+page.svelte
 msgid "Transfer"
@@ -3109,12 +3101,10 @@ msgstr "Moved"
 msgid "Total"
 msgstr "Total"
 
-#: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 msgid "Progress"
 msgstr "Progress"
 
-#: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 msgid "Loading progress..."
 msgstr "Loading progress..."
@@ -3224,7 +3214,6 @@ msgstr "Target connectivity validated"
 
 #: src/lib/components/custom/VM/MigrateModal.svelte
 #: src/routes/datacenter/backups/targets/+page.svelte
-#: src/routes/datacenter/backups/targets/+page.svelte
 msgid "Validation failed"
 msgstr "Validation failed"
 
@@ -3261,8 +3250,12 @@ msgstr "Demoting"
 msgid "Promoting"
 msgstr "Promoting"
 
+#. 0: details.eventId
+#. 0: details.eventId
 #. 0: selectedEvent.id
 #. 0: selectedEvent.id
+#: src/routes/datacenter/backups/events/+page.svelte
+#: src/routes/datacenter/backups/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 msgid "Event #{0}"
@@ -4185,6 +4178,7 @@ msgstr "Jail Name"
 msgid "Postgres"
 msgstr "Postgres"
 
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
 #: src/lib/components/custom/Jail/Create/Basic.svelte
 msgid "Jail ID"
 msgstr "Jail ID"
@@ -5326,6 +5320,7 @@ msgstr "Save & Back to Sockets"
 
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Form.svelte
 #: src/lib/components/custom/DataCenter/Backups/Targets/Form.svelte
+#: src/lib/components/custom/Dialog/GuestAction.svelte
 #: src/lib/components/custom/VM/Extra/CPUSelector.svelte
 #: src/lib/components/skeleton/BottomPanel.svelte
 #: src/lib/components/skeleton/BottomPanel.svelte
@@ -5335,6 +5330,7 @@ msgstr "Save & Back to Sockets"
 #: src/lib/components/skeleton/BottomPanel.svelte
 #: src/lib/components/skeleton/BottomPanel.svelte
 #: src/lib/components/skeleton/BottomPanel.svelte
+#: src/routes/[node]/container/[ocid]/+layout.svelte
 #: src/routes/[node]/directory-services/active-directory/+page.svelte
 #: src/routes/[node]/directory-services/kerberos/settings/+page.svelte
 #: src/routes/[node]/network/dhcp/config/+page.svelte
@@ -6600,7 +6596,6 @@ msgid "Jail <0/> will be backed up"
 msgstr "Jail <0/> will be backed up"
 
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Form.svelte
-#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
 msgid "CT ID: <0/>"
 msgstr "CT ID: <0/>"
 
@@ -6609,7 +6604,6 @@ msgid "VM <0/> will be backed up"
 msgstr "VM <0/> will be backed up"
 
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Form.svelte
-#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
 msgid "RID: <0/>"
 msgstr "RID: <0/>"
 
@@ -6671,10 +6665,6 @@ msgstr "Failed to load dataset details"
 #: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
 msgid "Destination dataset is required"
 msgstr "Destination dataset is required"
-
-#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
-msgid "Destination dataset must be fully qualified (for example: zroot/yyy)"
-msgstr "Destination dataset must be fully qualified (for example: zroot/yyy)"
 
 #: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
 msgid "Restore node is required"
@@ -6775,27 +6765,6 @@ msgstr "Restore VM Network Config"
 #: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
 msgid "Restore Jail Network Config"
 msgstr "Restore Jail Network Config"
-
-#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
-msgid "Detected Jail Metadata"
-msgstr "Detected Jail Metadata"
-
-#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
-#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
-msgid "Name: <0/>"
-msgstr "Name: <0/>"
-
-#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
-msgid "Base Pool: <0/>"
-msgstr "Base Pool: <0/>"
-
-#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
-msgid "Detected VM Metadata"
-msgstr "Detected VM Metadata"
-
-#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
-msgid "Pools: <0/>"
-msgstr "Pools: <0/>"
 
 #: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Restore.svelte
@@ -7568,6 +7537,7 @@ msgstr "View Periodics"
 msgid "Flash File"
 msgstr "Flash File"
 
+#: src/lib/components/skeleton/TreeViewCluster.svelte
 #: src/routes/[node]/container/[ocid]/+layout.svelte
 #: src/routes/[node]/storage/zfs/datasets/volumes/+page.svelte
 msgid "Delete Volumes"
@@ -7974,6 +7944,7 @@ msgstr "<0/> View Template"
 
 #: src/lib/components/skeleton/TreeViewCluster.svelte
 #: src/lib/components/skeleton/TreeViewCluster.svelte
+#: src/lib/components/skeleton/TreeViewCluster.svelte
 #: src/routes/[node]/jail/[ctid]/network/+page.svelte
 #: src/routes/[node]/authentication/groups/+page.svelte
 #: src/routes/[node]/authentication/users/local/+page.svelte
@@ -8316,6 +8287,7 @@ msgstr "Storage Pool Mapping"
 msgid "Storage #{0} ({1})"
 msgstr "Storage #{0} ({1})"
 
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
 #: src/lib/components/custom/VM/Hardware/Storage/AddStorageDialog.svelte
 #: src/lib/components/custom/VM/Hardware/Storage/AddStorageDialog.svelte
 #: src/lib/components/custom/VM/Template/Create.svelte
@@ -9098,6 +9070,8 @@ msgstr "Refresh Counters"
 #: src/lib/components/custom/Network/Firewall/Traffic/Form.svelte
 #: src/routes/[node]/network/firewall/nat/+page.svelte
 #: src/routes/[node]/network/firewall/nat/+page.svelte
+#: src/routes/datacenter/backups/events/+page.svelte
+#: src/routes/datacenter/backups/events/+page.svelte
 msgid "Log"
 msgstr "Log"
 
@@ -10637,6 +10611,7 @@ msgid "Transport Name"
 msgstr "Transport Name"
 
 #: src/lib/components/custom/Container/Spec.svelte
+#: src/lib/components/custom/Container/Spec.svelte
 #: src/lib/components/custom/Network/IfaceL3/Form.svelte
 #: src/lib/components/skeleton/TreeViewCluster.svelte
 #: src/routes/[node]/container/[ocid]/storage/+page.svelte
@@ -11397,10 +11372,6 @@ msgstr "Leave blank to keep current"
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Page.svelte
 msgid "Encrypted"
 msgstr "Encrypted"
-
-#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
-msgid "Show only active lineage"
-msgstr "Show only active lineage"
 
 #. 0: selectedSnapshotInfo.childCount
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Restore.svelte
@@ -13078,7 +13049,6 @@ msgstr "Resuming migration safely…"
 msgid "Waiting to retry the migration safely…"
 msgstr "Waiting to retry the migration safely…"
 
-#: src/routes/datacenter/backups/targets/+page.svelte
 #: src/routes/datacenter/replication/events/+page.svelte
 #: src/routes/datacenter/replication/policies/+page.svelte
 msgid "Ready"
@@ -13247,18 +13217,6 @@ msgid "Could not safely validate the restore destination. Check server logs and 
 msgstr "Could not safely validate the restore destination. Check server logs and retry"
 
 #: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
-msgid "Guest restores require an exact destination such as pool/sylve/virtual-machines/108 or pool/sylve/jails/108"
-msgstr "Guest restores require an exact destination such as pool/sylve/virtual-machines/108 or pool/sylve/jails/108"
-
-#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
-msgid "Guest restores are create-only. The RID/CTID and canonical destination dataset must not already exist."
-msgstr "Guest restores are create-only. The RID/CTID and canonical destination dataset must not already exist."
-
-#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
-msgid "The selected VM root uses the destination pool. Any additional VM storage pools keep their original pool names and must exist on the restore node."
-msgstr "The selected VM root uses the destination pool. Any additional VM storage pools keep their original pool names and must exist on the restore node."
-
-#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
 msgid "This restore point predates manifest commits. Legacy VM restore is blocked because the complete disk-root set cannot be verified."
 msgstr "This restore point predates manifest commits. Legacy VM restore is blocked because the complete disk-root set cannot be verified."
 
@@ -13399,14 +13357,6 @@ msgid "Finalizing"
 msgstr "Finalizing"
 
 #: src/routes/datacenter/backups/events/+page.svelte
-msgid "Transferred"
-msgstr "Transferred"
-
-#: src/routes/datacenter/backups/events/+page.svelte
-msgid "Stream estimate"
-msgstr "Stream estimate"
-
-#: src/routes/datacenter/backups/events/+page.svelte
 msgid "Transfer complete. Verifying and committing the backup."
 msgstr "Transfer complete. Verifying and committing the backup."
 
@@ -13466,7 +13416,9 @@ msgid "Error details"
 msgstr "Error details"
 
 #. 0: copyLabel.toLowerCase()
+#. 0: what.toLowerCase()
 #: src/lib/components/custom/Dialog/DetailBlock.svelte
+#: src/routes/datacenter/backups/events/+page.svelte
 msgid "Failed to copy {0}"
 msgstr "Failed to copy {0}"
 
@@ -13488,6 +13440,7 @@ msgstr "Record ID"
 
 #: src/lib/components/custom/Dialog/AuditDetailModal.svelte
 #: src/lib/components/custom/ZFS/pools/Scrub.svelte
+#: src/routes/datacenter/backups/events/+page.svelte
 msgid "Duration"
 msgstr "Duration"
 
@@ -13792,6 +13745,7 @@ msgstr "Authenticated access for {0} selection{1}"
 msgid "Authenticated access not configured"
 msgstr "Authenticated access not configured"
 
+#: src/lib/components/custom/Container/Catalog.svelte
 #: src/lib/components/custom/Samba/Share.svelte
 #: src/lib/components/custom/Samba/Share.svelte
 msgid "Not set"
@@ -14545,36 +14499,6 @@ msgstr "Backup runner pending"
 msgid "Replication is blocked by a cloned source snapshot; remove or promote the listed clone, then retry"
 msgstr "Replication is blocked by a cloned source snapshot; remove or promote the listed clone, then retry"
 
-#: src/routes/datacenter/backups/targets/+page.svelte
-#: src/routes/datacenter/backups/targets/+page.svelte
-msgid "Not validated"
-msgstr "Not validated"
-
-#: src/routes/datacenter/backups/targets/+page.svelte
-msgid "Removed voter"
-msgstr "Removed voter"
-
-#: src/routes/datacenter/backups/targets/+page.svelte
-msgid "Configuration changed"
-msgstr "Configuration changed"
-
-#: src/routes/datacenter/backups/targets/+page.svelte
-msgid "No validation has been recorded for this node"
-msgstr "No validation has been recorded for this node"
-
-#. 0: status.lastVerifiedAt; 1: readyUntil
-#: src/routes/datacenter/backups/targets/+page.svelte
-msgid "Last checked {0}{1}"
-msgstr "Last checked {0}{1}"
-
-#: src/routes/datacenter/backups/targets/+page.svelte
-msgid "Validation node"
-msgstr "Validation node"
-
-#: src/routes/datacenter/backups/targets/+page.svelte
-msgid "Node used for target connectivity validation"
-msgstr "Node used for target connectivity validation"
-
 #: src/lib/components/custom/DataCenter/Backups/Jobs/Page.svelte
 msgid "Runner rebind pending"
 msgstr "Runner rebind pending"
@@ -14786,6 +14710,7 @@ msgstr "The delete request could not be completed. Check your connection and clu
 msgid "Could not delete the policy. Check the reported error and cluster status, then retry."
 msgstr "Could not delete the policy. Check the reported error and cluster status, then retry."
 
+#: src/lib/components/custom/System/Updates/Operation.svelte
 #: src/routes/+error.svelte
 #: src/routes/datacenter/replication/policies/+page.svelte
 msgid "Request failed"
@@ -17515,6 +17440,7 @@ msgstr "User or group key must be 30 letters or numbers"
 msgid "Application API Token"
 msgstr "Application API Token"
 
+#: src/lib/components/custom/Container/Catalog.svelte
 #: src/lib/components/custom/Notifications/CreateOrEdit.svelte
 #: src/lib/components/custom/Notifications/CreateOrEdit.svelte
 #: src/routes/[node]/storage/nfs/settings/+page.svelte
@@ -17756,7 +17682,7 @@ msgstr "Force Remove…"
 msgid "Restarting Sylve"
 msgstr "Restarting Sylve"
 
-#: src/routes/+layout.svelte
+#: src/lib/stores/api.svelte.ts
 #: src/routes/datacenter/cluster/+page.svelte
 msgid "This node left the cluster. The page will refresh automatically."
 msgstr "This node left the cluster. The page will refresh automatically."
@@ -18654,6 +18580,7 @@ msgstr "Internal Server Error"
 msgid "Invalid response data"
 msgstr "Invalid response data"
 
+#: src/lib/components/custom/System/Updates/Operation.svelte
 #: src/routes/+error.svelte
 msgid "Invalid response format"
 msgstr "Invalid response format"
@@ -19267,6 +19194,7 @@ msgstr "Target Settings"
 
 #: src/lib/components/custom/iSCSI/ExtraConfig.svelte
 #: src/lib/components/ui/custom-input/combobox.svelte
+#: src/routes/datacenter/backups/events/+page.svelte
 msgid "Loading..."
 msgstr "Loading..."
 
@@ -21535,6 +21463,7 @@ msgstr "Advisories"
 #: src/routes/[node]/jail/[ctid]/packages/+page.svelte
 #: src/routes/[node]/jail/[ctid]/packages/+page.svelte
 #: src/routes/[node]/system/updates/packages/+page.svelte
+#: src/routes/datacenter/backups/targets/+page.svelte
 msgid "Not checked"
 msgstr "Not checked"
 
@@ -21670,10 +21599,6 @@ msgid "Restarting Sylve — waiting to reconnect"
 msgstr "Restarting Sylve — waiting to reconnect"
 
 #: src/lib/components/custom/System/Updates/Operation.svelte
-msgid "Waiting for Sylve to reconnect…"
-msgstr "Waiting for Sylve to reconnect…"
-
-#: src/lib/components/custom/System/Updates/Operation.svelte
 #: src/lib/components/custom/System/Updates/Operation.svelte
 msgid "Host Update"
 msgstr "Host Update"
@@ -21709,7 +21634,7 @@ msgid "Built for"
 msgstr "Built for"
 
 #. 0: job.plan.release.freebsd
-#. 0: published.release.freebsd
+#. 0: view.release.freebsd
 #: src/lib/components/custom/System/Updates/Operation.svelte
 #: src/routes/[node]/system/updates/sylve/+page.svelte
 msgid "FreeBSD {0}"
@@ -21762,10 +21687,6 @@ msgstr "Some packages may have changed. Review command output and installed stat
 #: src/lib/components/custom/System/Updates/Operation.svelte
 msgid "Available versions are shown in Packages. Nothing was installed."
 msgstr "Available versions are shown in Packages. Nothing was installed."
-
-#: src/lib/components/custom/System/Updates/Operation.svelte
-msgid "Update pkg first, then preview the remaining packages again. Jail package management and monitoring require pkg 2.8.4 and may become unavailable after this upgrade."
-msgstr "Update pkg first, then preview the remaining packages again. Jail package management and monitoring require pkg 2.8.4 and may become unavailable after this upgrade."
 
 #. 0: job?.plan ? convertDbTime(job.plan.expiresAt) \\: ''
 #: src/lib/components/custom/System/Updates/Operation.svelte
@@ -21982,7 +21903,7 @@ msgstr "Sylve is up to date."
 msgid "No newer eligible release."
 msgstr "No newer eligible release."
 
-#. 0: convertDbTime(published.releaseCheckedAt)
+#. 0: convertDbTime(view.releaseCheckedAt)
 #: src/routes/[node]/system/updates/sylve/+page.svelte
 msgid "Last checked {0}."
 msgstr "Last checked {0}."
@@ -22053,10 +21974,6 @@ msgstr "Host Updates - Package Preview"
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Host Updates - Install Packages"
 msgstr "Host Updates - Install Packages"
-
-#: src/lib/components/skeleton/BottomPanel.svelte
-msgid "Host Updates - Check Sylve"
-msgstr "Host Updates - Check Sylve"
 
 #: src/lib/components/skeleton/BottomPanel.svelte
 msgid "Host Updates - Sylve Preview"
@@ -22764,10 +22681,6 @@ msgid "Edit a container to change its image, ports, environment, storage or reso
 msgstr "Edit a container to change its image, ports, environment, storage or resources before the stack is created."
 
 #: src/lib/components/custom/Container/Create.svelte
-msgid "The stack's other containers reach it by this name"
-msgstr "The stack's other containers reach it by this name"
-
-#: src/lib/components/custom/Container/Create.svelte
 msgid "Container ID"
 msgstr "Container ID"
 
@@ -22813,6 +22726,9 @@ msgid "Podman ID"
 msgstr "Podman ID"
 
 #: src/lib/components/custom/Container/GuestInformation.svelte
+#: src/routes/[node]/container/[ocid]/options/+page.svelte
+#: src/routes/[node]/container/[ocid]/options/+page.svelte
+#: src/routes/[node]/container/[ocid]/options/+page.svelte
 msgid "Title"
 msgstr "Title"
 
@@ -23143,7 +23059,9 @@ msgstr "Container update queued; it will be recreated"
 msgid "Container updated"
 msgstr "Container updated"
 
-#. 0: stack
+#. 0: item.label
+#. 0: stackTitle || stack
+#: src/lib/components/skeleton/TreeViewCluster.svelte
 #: src/routes/[node]/container/[ocid]/+layout.svelte
 msgid "Stack {0} deletion queued"
 msgstr "Stack {0} deletion queued"
@@ -23157,7 +23075,7 @@ msgstr "Container {0} deletion queued"
 msgid "Open Web UI"
 msgstr "Open Web UI"
 
-#. 0: current.stack; 1: stackMembers.current .length
+#. 0: current.stackTitle || current.stack; 1: stackMembers .current.length
 #: src/routes/[node]/container/[ocid]/+layout.svelte
 msgid "Delete the whole {0} stack ({1} containers)"
 msgstr "Delete the whole {0} stack ({1} containers)"
@@ -23488,3 +23406,264 @@ msgstr "Initializing with the selected services makes these changes to this host
 #: src/lib/components/custom/VM/MigrateModal.svelte
 msgid "Catching up {0}"
 msgstr "Catching up {0}"
+
+#: src/lib/components/skeleton/TreeViewCluster.svelte
+msgid "Failed to rename stack"
+msgstr "Failed to rename stack"
+
+#: src/lib/components/skeleton/TreeViewCluster.svelte
+msgid "Rename Stack"
+msgstr "Rename Stack"
+
+#. 0: form.service || form.name
+#: src/lib/components/custom/Container/Create.svelte
+msgid "The stack's other containers reach it as {0}"
+msgstr "The stack's other containers reach it as {0}"
+
+#: src/lib/components/custom/Container/Catalog.svelte
+msgid "New datasets under the stack"
+msgstr "New datasets under the stack"
+
+#. 0: variable.folders.join(', ')
+#: src/lib/components/custom/Container/Catalog.svelte
+msgid "Holds {0}. Leave empty for a ZFS dataset per folder under the stack; a host directory or dataset you give must already contain them."
+msgstr "Holds {0}. Leave empty for a ZFS dataset per folder under the stack; a host directory or dataset you give must already contain them."
+
+#: src/lib/components/custom/Container/Catalog.svelte
+msgid "Stack Name"
+msgstr "Stack Name"
+
+#: src/lib/components/custom/Container/Catalog.svelte
+msgid "Names its containers, network and folders; a new name installs another copy."
+msgstr "Names its containers, network and folders; a new name installs another copy."
+
+#: src/lib/components/custom/Container/Spec.svelte
+msgid "No environment variables"
+msgstr "No environment variables"
+
+#: src/lib/components/custom/Container/Spec.svelte
+msgid "<0/>Add Variable"
+msgstr "<0/>Add Variable"
+
+#: src/lib/components/custom/Container/Spec.svelte
+msgid "<0/>Edit as List"
+msgstr "<0/>Edit as List"
+
+#: src/lib/components/custom/Container/Spec.svelte
+msgid "<0/>Paste as Text"
+msgstr "<0/>Paste as Text"
+
+#: src/routes/datacenter/backups/targets/+page.svelte
+msgid "No connection check from this node yet"
+msgstr "No connection check from this node yet"
+
+#. 0: new Date(status.lastVerifiedAt).toLocaleString()
+#: src/routes/datacenter/backups/targets/+page.svelte
+msgid "Last checked {0}"
+msgstr "Last checked {0}"
+
+#: src/routes/datacenter/backups/targets/+page.svelte
+msgid "Settings changed"
+msgstr "Settings changed"
+
+#: src/routes/datacenter/backups/targets/+page.svelte
+msgid "Connectivity"
+msgstr "Connectivity"
+
+#. 0: failed.join(', ')
+#: src/routes/datacenter/backups/targets/+page.svelte
+msgid "Validation failed on {0}"
+msgstr "Validation failed on {0}"
+
+#: src/routes/[node]/container/[ocid]/options/+page.svelte
+msgid "Same as the name"
+msgstr "Same as the name"
+
+#: src/routes/[node]/container/[ocid]/options/+page.svelte
+msgid "Shown for the container; empty shows its name"
+msgstr "Shown for the container; empty shows its name"
+
+#: src/routes/[node]/container/[ocid]/options/+page.svelte
+msgid "Its hostname, unless one is set, and the name other containers on its network reach it by. Saving recreates the container."
+msgstr "Its hostname, unless one is set, and the name other containers on its network reach it by. Saving recreates the container."
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/Form.svelte
+msgid "Archived generations to keep must be 0 or greater"
+msgstr "Archived generations to keep must be 0 or greater"
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/Form.svelte
+msgid "Keep Archived Generations"
+msgstr "Keep Archived Generations"
+
+#. 0: Number.parseInt(form.pruneKeepGenerations || '0', 10)
+#: src/lib/components/custom/DataCenter/Backups/Jobs/Form.svelte
+msgid "Keep newest {0}"
+msgstr "Keep newest {0}"
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/Form.svelte
+msgid "Keep all"
+msgstr "Keep all"
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/Form.svelte
+msgid "Archived generations: <0/>"
+msgstr "Archived generations: <0/>"
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
+msgid "Failed to load pools"
+msgstr "Failed to load pools"
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
+msgid "The guest ID or destination pool is not valid for this restore"
+msgstr "The guest ID or destination pool is not valid for this restore"
+
+#. 0: id; 1: owner.hostname
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
+msgid "ID {0} is already used by a guest on {1}"
+msgstr "ID {0} is already used by a guest on {1}"
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
+msgid "Select a destination pool"
+msgstr "Select a destination pool"
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
+msgid "Destination dataset must be fully qualified (for example: zroot/restored)"
+msgstr "Destination dataset must be fully qualified (for example: zroot/restored)"
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
+msgid "Destination Pool"
+msgstr "Destination Pool"
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
+msgid "Loading pools..."
+msgstr "Loading pools..."
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
+msgid "No pools on this node"
+msgstr "No pools on this node"
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
+msgid "The backup is restored as a new guest, so its ID must not be in use anywhere in the cluster."
+msgstr "The backup is restored as a new guest, so its ID must not be in use anywhere in the cluster."
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
+msgid "The VM's main disk goes to the selected pool. Disks on other pools keep their original pool names, which must exist on the restore node."
+msgstr "The VM's main disk goes to the selected pool. Disks on other pools keep their original pool names, which must exist on the restore node."
+
+#: src/lib/components/custom/DataCenter/Backups/Jobs/OOBRestore.svelte
+msgid "Datasets under <0/> can't be used."
+msgstr "Datasets under <0/> can't be used."
+
+#: src/routes/datacenter/backups/events/+page.svelte
+msgid "Deleted job"
+msgstr "Deleted job"
+
+#: src/routes/datacenter/backups/events/+page.svelte
+#: src/routes/datacenter/backups/events/+page.svelte
+msgid "Guest / Dataset"
+msgstr "Guest / Dataset"
+
+#: src/routes/datacenter/backups/events/+page.svelte
+#: src/routes/datacenter/backups/events/+page.svelte
+msgid "Job"
+msgstr "Job"
+
+#: src/routes/datacenter/backups/events/+page.svelte
+msgid "Failed to load the event"
+msgstr "Failed to load the event"
+
+#: src/routes/datacenter/backups/events/+page.svelte
+msgid "Restore point"
+msgstr "Restore point"
+
+#: src/routes/datacenter/backups/events/+page.svelte
+msgid "From"
+msgstr "From"
+
+#: src/routes/datacenter/backups/events/+page.svelte
+msgid "To"
+msgstr "To"
+
+#. 0: formatBytesBinary(eventDetails.current.totalBytes)
+#: src/routes/datacenter/backups/events/+page.svelte
+msgid "of about {0}"
+msgstr "of about {0}"
+
+#: src/routes/datacenter/backups/events/+page.svelte
+msgid "No output recorded."
+msgstr "No output recorded."
+
+#: src/lib/components/custom/Jail/Packages/Operation.svelte
+#: src/lib/components/custom/System/Updates/Operation.svelte
+msgid "Operation unavailable"
+msgstr "Operation unavailable"
+
+#: src/lib/components/custom/System/Updates/Operation.svelte
+msgid "Creating boot environment"
+msgstr "Creating boot environment"
+
+#: src/lib/components/custom/System/Updates/Operation.svelte
+msgid "Downloading release"
+msgstr "Downloading release"
+
+#: src/lib/components/custom/System/Updates/Operation.svelte
+msgid "Verifying release"
+msgstr "Verifying release"
+
+#: src/lib/components/custom/Jail/Packages/Operation.svelte
+#: src/lib/components/custom/System/Updates/Operation.svelte
+msgid "pkg must be upgraded on its own first. Upgrade it, then preview the remaining packages again."
+msgstr "pkg must be upgraded on its own first. Upgrade it, then preview the remaining packages again."
+
+#: src/lib/components/custom/System/Updates/Operation.svelte
+msgid "Sylve is restarting to finish the update. The page will refresh automatically."
+msgstr "Sylve is restarting to finish the update. The page will refresh automatically."
+
+#: src/lib/components/custom/System/Updates/Operation.svelte
+msgid "Sylve is restarting. Reconnecting…"
+msgstr "Sylve is restarting. Reconnecting…"
+
+#: src/lib/components/custom/System/Updates/Operation.svelte
+msgid "Connection interrupted. Reconnecting…"
+msgstr "Connection interrupted. Reconnecting…"
+
+#: src/lib/components/skeleton/TreeViewCluster.svelte
+#: src/lib/components/skeleton/TreeViewCluster.svelte
+msgid "<0/> Update"
+msgstr "<0/> Update"
+
+#: src/lib/components/custom/Dialog/GuestAction.svelte
+msgid "Pulls the newer image and recreates it, keeping its data. Its running workloads are restarted."
+msgstr "Pulls the newer image and recreates it, keeping its data. Its running workloads are restarted."
+
+#: src/lib/components/custom/Task/Activity.svelte
+msgid "Update Image"
+msgstr "Update Image"
+
+#: src/lib/components/custom/Task/Activity.svelte
+msgid "Update Stack"
+msgstr "Update Stack"
+
+#. 0: current.image
+#: src/routes/[node]/container/[ocid]/+layout.svelte
+msgid "A newer {0} is available"
+msgstr "A newer {0} is available"
+
+#: src/routes/[node]/containers/images/+page.svelte
+msgid "Checked for container image updates"
+msgstr "Checked for container image updates"
+
+#: src/routes/[node]/containers/images/+page.svelte
+msgid "Check for Updates"
+msgstr "Check for Updates"
+
+#: src/routes/[node]/container/[ocid]/summary/+page.svelte
+msgid "Creating Stack"
+msgstr "Creating Stack"
+
+#: src/routes/[node]/container/[ocid]/summary/+page.svelte
+msgid "Updating Image"
+msgstr "Updating Image"
+
+#: src/routes/[node]/container/[ocid]/summary/+page.svelte
+msgid "Updating Stack"
+msgstr "Updating Stack"

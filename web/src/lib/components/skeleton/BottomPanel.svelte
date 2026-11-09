@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { storage } from '$lib';
+	import { listBackupJobsResult, listBackupTargetsResult } from '$lib/api/cluster/backups';
 	import { getNodes } from '$lib/api/cluster/cluster';
 	import { getSimpleContainers } from '$lib/api/container/container';
 	import { getAuditRecords } from '$lib/api/info/audit';
@@ -11,7 +12,7 @@
 	import * as Tabs from '$lib/components/ui/tabs/index.js';
 	import { reload } from '$lib/stores/api.svelte';
 	import type { ClusterNode } from '$lib/types/cluster/cluster';
-	import type { SimpleContainer } from '$lib/types/container/container';
+	import { containerTitle, type SimpleContainer } from '$lib/types/container/container';
 	import type { AuditRecord } from '$lib/types/info/audit';
 	import type { SimpleJail, SimpleJailTemplate } from '$lib/types/jail/jail';
 	import type { SimpleVmTemplate } from '$lib/types/vm/vm';
@@ -132,6 +133,36 @@
 		{
 			initialValue: [] as SimpleVmTemplate[]
 		}
+	);
+
+	const backupAuditIds = $derived(
+		[
+			...new Set(
+				(auditRecords.current || []).flatMap(
+					(record) =>
+						record.action?.path?.match(/^\/api\/cluster\/backups\/(?:targets|jobs)\/(\d+)/)?.[1] ??
+						[]
+				)
+			)
+		]
+			.sort()
+			.join(',')
+	);
+
+	const backupNames = resource(
+		() => `backup-audit-names-${backupAuditIds}`,
+		async () => {
+			if (!backupAuditIds) return new Map<string, string>();
+			const [targets, jobs] = await Promise.all([
+				listBackupTargetsResult(),
+				listBackupJobsResult()
+			]);
+			return new Map([
+				...(Array.isArray(targets) ? targets : []).map((t) => [`targets:${t.id}`, t.name] as const),
+				...(Array.isArray(jobs) ? jobs : []).map((j) => [`jobs:${j.id}`, j.name] as const)
+			]);
+		},
+		{ initialValue: new Map<string, string>() }
 	);
 
 	useInterval(() => 2000, {
@@ -392,7 +423,6 @@
 			'/api/system/updates/actions/audit': 'Host Updates - Audit',
 			'/api/system/updates/actions/packages-preview': 'Host Updates - Package Preview',
 			'/api/system/updates/actions/packages-apply': 'Host Updates - Install Packages',
-			'/api/system/updates/actions/sylve-check': 'Host Updates - Check Sylve',
 			'/api/system/updates/actions/sylve-preview': 'Host Updates - Sylve Preview',
 			'/api/system/updates/actions/sylve-apply': 'Host Updates - Install Sylve',
 			'/api/vm/:id/storage/from-image': 'VM Storage - Create From Image',
@@ -808,8 +838,8 @@
 	);
 
 	function containerIdentityLabel(ocId: number): string {
-		const name = containerByOcId.get(ocId)?.name;
-		return name ? `${name} (OCID ${ocId})` : `OCID ${ocId}`;
+		const container = containerByOcId.get(ocId);
+		return container ? `${containerTitle(container)} (OCID ${ocId})` : `OCID ${ocId}`;
 	}
 
 	function containerActionLabel(path: string, method: string, response: unknown): string | null {
@@ -832,7 +862,8 @@
 					? `Container - Create - ${containerIdentityLabel(ocId)}`
 					: 'Container - Create';
 			}
-			const stack = containerByOcId.get(ocId)?.stack;
+			const member = containerByOcId.get(ocId);
+			const stack = member?.stackTitle || member?.stack;
 			return `Container Stack - Create${stack ? ` - ${stack}` : ocId > 0 ? ` - OCID ${ocId}` : ''}`;
 		}
 		match = path.match(/^\/api\/container\/images\/([^/]+)\/(pull|prune|[^/]+)$/);
@@ -1438,13 +1469,18 @@
 		};
 	}
 
-	function backupActionIdentity(path: string): string | null {
+	function backupActionIdentity(path: string, body: unknown): string | null {
 		const match = path.match(
-			/^\/api\/cluster\/backups\/(targets|jobs)\/(\d+)(?:\/(?:validate|run|restore))?$/
+			/^\/api\/cluster\/backups\/(targets|jobs)(?:\/(\d+)(?:\/(?:validate|run|restore))?)?$/
 		);
 		if (!match) return null;
-		const id = match[2];
-		return match[1] === 'targets' ? `Target ID ${id}` : `Job ID ${id}`;
+		const [, kind, id] = match;
+		const name =
+			auditText((body as { name?: unknown } | undefined)?.name) ||
+			backupNames.current.get(`${kind}:${id}`);
+		if (name) return name;
+		if (!id) return null;
+		return kind === 'targets' ? `Target ID ${id}` : `Job ID ${id}`;
 	}
 
 	function replicationActionIdentity(path: string): string | null {
@@ -1536,7 +1572,7 @@
 				resolvedAction += ` - ${hostInterfaceL3Target.identity}`;
 			}
 
-			const backupIdentity = backupActionIdentity(path);
+			const backupIdentity = backupActionIdentity(path, recordCopy.action.body);
 			if (backupIdentity && resolvedAction.startsWith('DC Backup ')) {
 				resolvedAction += ` - ${backupIdentity}`;
 			}
@@ -2159,26 +2195,27 @@
 					<Table.Body class="pb-32">
 						{#each records as record, i (i)}
 							<Table.Row>
-								<Table.Cell class="text-wrap px-4 py-2">{convertDbTime(record.started)}</Table.Cell>
-								<Table.Cell class="text-wrap px-4 py-2">{convertDbTime(record.ended)}</Table.Cell>
-								<Table.Cell class="text-wrap px-4 py-2">{record.node}</Table.Cell>
-								<Table.Cell class="text-wrap px-4 py-2"
+								<Table.Cell class="px-4 py-2">{convertDbTime(record.started)}</Table.Cell>
+								<Table.Cell class="px-4 py-2">{convertDbTime(record.ended)}</Table.Cell>
+								<Table.Cell class="px-4 py-2">{record.node}</Table.Cell>
+								<Table.Cell class="px-4 py-2"
 									>{`${record.user}@${record.authType || 'cluster'}`}</Table.Cell
 								>
-								<Table.Cell class="p-0">
+								<Table.Cell class="w-full max-w-0 p-0">
 									<button
 										type="button"
-										class="hover:bg-muted/40 focus-visible:ring-ring flex min-h-10 w-full items-center px-4 py-2 text-left text-wrap transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:outline-none"
+										class="hover:bg-muted/40 focus-visible:ring-ring flex min-h-10 w-full items-center px-4 py-2 text-left transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:outline-none"
+										title={record.resolvedAction}
 										aria-label={`View request details for ${record.resolvedAction}`}
 										onclick={() => openAuditDetails(record, 'request')}
 									>
-										{record.resolvedAction}
+										<span class="truncate">{record.resolvedAction}</span>
 									</button>
 								</Table.Cell>
 								<Table.Cell class="p-0">
 									<button
 										type="button"
-										class="hover:bg-muted/40 focus-visible:ring-ring flex min-h-10 w-full items-center px-4 py-2 text-left text-wrap transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:outline-none"
+										class="hover:bg-muted/40 focus-visible:ring-ring flex min-h-10 w-full items-center px-4 py-2 text-left transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:outline-none"
 										aria-label={`View response details for ${record.resolvedAction}`}
 										onclick={() => openAuditDetails(record, 'response')}
 									>

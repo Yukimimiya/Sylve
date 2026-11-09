@@ -104,6 +104,9 @@ func TestIntegrationRunBackupJobPruneAfterBackup(t *testing.T) {
 	}
 
 	for i := 0; i < 4; i++ {
+		if i > 0 {
+			changeDataset(t, poolName+"/source/backup")
+		}
 		svc.queuedJobs = make(map[uint]struct{})
 		svc.runningJobs = make(map[uint]struct{})
 		svc.runningWorkloadOp = make(map[string]string)
@@ -163,7 +166,7 @@ func TestIntegrationRunBackupJobPruneAfterBackup(t *testing.T) {
 		t.Fatalf("expected exactly 2 child source snapshots, got %d", localChildAfter)
 	}
 
-	destSuffix := svc.backupDestSuffixForMode("dataset", "", poolName+"/source/backup")
+	destSuffix := datasetDestSuffix("", poolName+"/source/backup")
 	remoteRoot := remoteActiveDatasetForSuffix(target.BackupRoot, destSuffix)
 	remoteSnapshots := listZFSSnapshots(t, remoteRoot)
 	for _, dataset := range []string{remoteRoot, remoteRoot + "/child"} {
@@ -219,6 +222,9 @@ func TestIntegrationRunBackupJobAcceptsManifestProvenTargetOnlySnapshot(t *testi
 
 	run := func(attempt int) {
 		t.Helper()
+		if attempt > 1 {
+			changeDataset(t, source)
+		}
 		svc.queuedJobs = make(map[uint]struct{})
 		svc.runningJobs = make(map[uint]struct{})
 		svc.runningWorkloadOp = make(map[string]string)
@@ -239,7 +245,7 @@ func TestIntegrationRunBackupJobAcceptsManifestProvenTargetOnlySnapshot(t *testi
 	if got := countSnapshotsForDatasetWithPrefix(localSnapshots, source, prefix); got != 1 {
 		t.Fatalf("local keep-last did not create a target-only point: local_count=%d snapshots=%v", got, localSnapshots)
 	}
-	destSuffix := svc.backupDestSuffixForMode(job.Mode, "", source)
+	destSuffix := datasetDestSuffix("", source)
 	remoteRoot := remoteActiveDatasetForSuffix(target.BackupRoot, destSuffix)
 	remoteSnapshots := listZFSSnapshots(t, remoteRoot)
 	if got := countSnapshotsForDatasetWithPrefix(remoteSnapshots, remoteRoot, prefix); got != 2 {
@@ -309,7 +315,7 @@ func TestIntegrationRunBackupJobAutoReseedOnDivergedTarget(t *testing.T) {
 		t.Fatalf("first backup failed after integration prerequisites passed: %v", err)
 	}
 
-	destSuffix := svc.backupDestSuffixForMode("dataset", "", poolName+"/source/reseed")
+	destSuffix := datasetDestSuffix("", poolName+"/source/reseed")
 	targetDS := poolName + "/target/" + destSuffix
 	if !zfsDatasetExists(t, targetDS) {
 		t.Fatalf("target dataset %s does not exist after first backup", targetDS)

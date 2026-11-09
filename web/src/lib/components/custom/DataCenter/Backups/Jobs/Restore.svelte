@@ -11,7 +11,8 @@
 	import SimpleSelect from '$lib/components/custom/SimpleSelect.svelte';
 	import SpanWithIcon from '$lib/components/custom/SpanWithIcon.svelte';
 	import type { ClusterDetails, ClusterNode } from '$lib/types/cluster/cluster';
-	import type { BackupGuestRef, BackupJob, SnapshotInfo } from '$lib/types/cluster/backups';
+	import type { BackupJob, SnapshotInfo } from '$lib/types/cluster/backups';
+	import { parseGuestFromDatasetPath } from '$lib/utils/backup-jobs-page-state';
 	import { formatBytesBinary } from '$lib/utils/bytes';
 	import { handleAPIError, isAPIResponse } from '$lib/utils/http';
 	import {
@@ -59,20 +60,6 @@
 		}
 		return out;
 	});
-
-	function parseGuestFromDatasetPath(dataset: string): BackupGuestRef {
-		const jailMatch = dataset.match(/(?:^|\/)jails\/(\d+)(?:$|[/.])/);
-		if (jailMatch) {
-			const parsed = Number.parseInt(jailMatch[1], 10);
-			if (!Number.isNaN(parsed) && parsed > 0) return { kind: 'jail', id: parsed };
-		}
-		const vmMatch = dataset.match(/(?:^|\/)virtual-machines\/(\d+)(?:$|[/.])/);
-		if (vmMatch) {
-			const parsed = Number.parseInt(vmMatch[1], 10);
-			if (!Number.isNaN(parsed) && parsed > 0) return { kind: 'vm', id: parsed };
-		}
-		return { kind: 'dataset', id: 0 };
-	}
 
 	function snapshotLineageIcon(snapshot: SnapshotInfo): {
 		icon: string;
@@ -514,6 +501,7 @@
 							label="Encryption Passphrase (Optional)"
 							placeholder="Required only when the key is not already registered"
 							type="password"
+							autocomplete="new-password"
 							bind:value={encryptionKey}
 							classes="space-y-1"
 						/>

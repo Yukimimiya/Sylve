@@ -1,6 +1,12 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { containerAction } from '$lib/api/container/container';
+	import {
+		containerAction,
+		deleteContainer,
+		renameContainerStack
+	} from '$lib/api/container/container';
+	import CustomCheckbox from '$lib/components/ui/custom-input/checkbox.svelte';
+	import { toastContainerError } from '$lib/utils/container/errors';
 	import { convertJailToTemplate, deleteJailTemplate, jailAction } from '$lib/api/jail/jail';
 	import CreateJailFromTemplate from '$lib/components/custom/Jail/Template/Create.svelte';
 	import ViewJailTemplate from '$lib/components/custom/Jail/Template/View.svelte';
@@ -22,18 +28,19 @@
 	import { toast } from 'svelte-sonner';
 	import SidebarElement from './TreeViewCluster.svelte';
 	import CustomValueInput from '$lib/components/ui/custom-input/value.svelte';
-	import { handleAPIError, isAPIResponse } from '$lib/utils/http';
+	import { handleAPIError, isAPIResponse, removeCache } from '$lib/utils/http';
 	import { useSafeGoto } from '$lib/hooks/navigation.svelte';
 	import { getGuestNavigationHref } from '$lib/guest-navigation';
 	import {
 		isResourceTreeGroup,
 		type ResourceTreeDensity,
-		type ResourceTreeItem
+		type ResourceTreeItem,
+		type ResourceTreeState
 	} from '$lib/resource-tree';
 	import type { ActiveLifecycleGuest } from '$lib/types/task/lifecycle';
 	import { removeStaleCacheByRID } from '$lib/utils/vm/vm';
 
-	type GuestAction = 'start' | 'reboot' | 'shutdown' | 'stop' | 'restart' | 'kill';
+	type GuestAction = 'start' | 'reboot' | 'shutdown' | 'stop' | 'restart' | 'kill' | 'update';
 
 	interface Props {
 		item: ResourceTreeItem;
@@ -79,6 +86,7 @@
 
 	const handleLabelClick = (e: Event) => {
 		e.preventDefault();
+		if (item.resourceType === 'stack') onToggleId(item.id);
 		if (!item.href) return;
 		const href =
 			item.resourceType === 'vm' ||
@@ -102,9 +110,9 @@
 		onToggleId(item.id);
 	};
 
-	function statusDotClass(state?: 'active' | 'inactive' | 'orphan'): string | null {
+	function statusDotClass(state?: ResourceTreeState): string | null {
 		if (state === 'active') return 'bg-green-500';
-		if (state === 'orphan') return 'bg-amber-500';
+		if (state === 'orphan' || state === 'partial') return 'bg-amber-500';
 		if (state === 'inactive') return 'bg-neutral-500';
 		return null;
 	}
@@ -128,11 +136,18 @@
 	}
 
 	let activeUrl = $derived(page.url.pathname);
-	let isActive = $derived(isItemActive(item, activeUrl));
+	let isStack = $derived(item.resourceType === 'stack');
+	// An open stack leaves the highlight to the member being viewed.
+	let isActive = $derived((!isStack || !isOpen) && isItemActive(item, activeUrl));
+	let stackTitle = $derived.by(() => {
+		const running = (item.children ?? []).filter((child) => child.state === 'active').length;
+		return `${item.label} · ${running} of ${item.children?.length ?? 0} running`;
+	});
 	let hasContextMenu = $derived(
 		item.resourceType === 'vm' ||
 			item.resourceType === 'jail' ||
 			item.resourceType === 'container' ||
+			isStack ||
 			item.resourceType === 'jail-template' ||
 			item.resourceType === 'vm-template'
 	);
@@ -150,6 +165,77 @@
 	let convertTemplateName = $state('');
 	let deleteVMOpen = $state(false);
 	let deleteVMLoading = $state(false);
+	let renameStackOpen = $state(false);
+	let renameStackLoading = $state(false);
+	let renameStackTitle = $state('');
+	let deleteStackOpen = $state(false);
+	let deleteStackVolumes = $state(false);
+
+	const handleStackUpdate = async () => {
+		const member = item.children?.find((child) => child.resourceId !== undefined);
+		if (actionInFlight || member?.resourceId === undefined || !item.nodeHostname) return;
+		actionInFlight = true;
+		try {
+			const confirmed = await confirmGuestAction({
+				guestType: 'container',
+				guestId: member.resourceId,
+				name: item.label,
+				hostname: item.nodeHostname,
+				action: 'update'
+			});
+			if (!confirmed) return;
+			const result = await containerAction(member.resourceId, 'upgrade-stack', item.nodeHostname);
+			if (isAPIResponse(result)) {
+				toastContainerError(result);
+				return;
+			}
+			reload.leftPanel = true;
+		} finally {
+			actionInFlight = false;
+		}
+	};
+
+	const handleDeleteStack = async () => {
+		const hostname = item.nodeHostname;
+		if (!hostname) return;
+		const viewing = (item.children ?? []).some(
+			(member) => member.href && activeUrl.startsWith(member.href.replace(/\/summary$/, ''))
+		);
+		for (const member of item.children ?? []) {
+			if (member.resourceId === undefined) continue;
+			const result = await deleteContainer(member.resourceId, deleteStackVolumes, hostname);
+			if (isAPIResponse(result)) {
+				toastContainerError(result);
+				return;
+			}
+			await removeCache(`container-${member.resourceId}`, hostname);
+		}
+		deleteStackOpen = false;
+		reload.leftPanel = true;
+		toast.success(`Stack ${item.label} deletion queued`, { position: 'bottom-center' });
+		if (viewing) useSafeGoto(`/${hostname}/summary`, { replaceState: false, noScroll: false });
+	};
+
+	const handleRenameStack = async () => {
+		if (renameStackLoading || !item.stack || !item.nodeHostname) return;
+		renameStackLoading = true;
+		try {
+			const result = await renameContainerStack(
+				item.stack,
+				renameStackTitle.trim(),
+				item.nodeHostname
+			);
+			if (result.status === 'error') {
+				handleAPIError(result);
+				toast.error('Failed to rename stack', { position: 'bottom-center' });
+				return;
+			}
+			renameStackOpen = false;
+			reload.leftPanel = true;
+		} finally {
+			renameStackLoading = false;
+		}
+	};
 
 	function baseGuestName(label: string): string {
 		return label.replace(/\s*\((?:CT|VM)?\s*\d+\)\s*$/i, '').trim();
@@ -204,17 +290,25 @@
 				| Awaited<ReturnType<typeof jailAction>>
 				| Awaited<ReturnType<typeof containerAction>>;
 			if (resourceType === 'container') {
-				if (action !== 'start' && action !== 'stop' && action !== 'restart' && action !== 'kill') {
+				if (action === 'update') {
+					result = await containerAction(resourceId, 'upgrade', hostname);
+				} else if (
+					action !== 'start' &&
+					action !== 'stop' &&
+					action !== 'restart' &&
+					action !== 'kill'
+				) {
 					return;
+				} else {
+					result = await containerAction(resourceId, action, hostname);
 				}
-				result = await containerAction(resourceId, action, hostname);
 			} else if (resourceType === 'jail') {
 				if (action !== 'start' && action !== 'stop' && action !== 'restart') {
 					return;
 				}
 				result = await jailAction(resourceId, action, hostname);
 			} else {
-				if (action === 'restart' || action === 'kill') return;
+				if (action === 'restart' || action === 'kill' || action === 'update') return;
 				result = await actionVm(resourceId, action, hostname);
 			}
 
@@ -409,7 +503,8 @@
 			<div class="flex min-w-0 items-center gap-1.5">
 				<span class={`icon-[${item.icon}] size-3.5 shrink-0`}></span>
 				<span class="truncate text-[11px] font-semibold tracking-wide uppercase">{item.label}</span>
-				<span class="text-muted-foreground/70 text-[10px] font-normal">{item.children?.length}</span
+				<span class="text-muted-foreground/70 text-[10px] font-normal"
+					>{item.count ?? item.children?.length}</span
 				>
 			</div>
 			<div class="flex size-5 shrink-0 items-center justify-center">
@@ -427,7 +522,7 @@
 				onkeydown={(e) => (e.key === 'Enter' || e.key === ' ' ? handleLabelClick(e) : null)}
 			>
 				<div class="flex min-w-0 items-center space-x-1 text-sm">
-					{#if item.icon === 'material-symbols--monitor-outline' || item.icon === 'hugeicons--prison' || item.icon === 'lucide--container'}
+					{#if item.icon === 'material-symbols--monitor-outline' || item.icon === 'hugeicons--prison' || item.icon === 'lucide--container' || isStack}
 						<div class="flex items-center space-x-1 text-sm">
 							<div class="relative">
 								<span
@@ -449,7 +544,7 @@
 					{/if}
 					<p
 						class="font-inter cursor-pointer truncate whitespace-nowrap"
-						title={item.meta ? `${item.label} · ${item.meta}` : item.label}
+						title={isStack ? stackTitle : item.meta ? `${item.label} · ${item.meta}` : item.label}
 					>
 						{item.label}
 						{#if item.meta}
@@ -464,7 +559,7 @@
 						<span
 							role="button"
 							tabindex="0"
-							class="hover:bg-background flex size-5 shrink-0 cursor-pointer items-center justify-center rounded"
+							class="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded"
 							onclick={handleIconClick}
 							onkeydown={(e) => (e.key === 'Enter' || e.key === ' ' ? handleIconClick(e) : null)}
 						>
@@ -612,6 +707,49 @@
 							Start
 						</ContextMenu.Item>
 					{/if}
+					{#if item.update}
+						<ContextMenu.Separator />
+						<ContextMenu.Item
+							class="gap-2"
+							disabled={actionInFlight || lifecycleActive}
+							onSelect={() => void handleActionClick('update')}
+						>
+							<span class="icon-[mdi--arrow-up-circle-outline] h-4 w-4"></span>
+							Update
+						</ContextMenu.Item>
+					{/if}
+				{:else if isStack}
+					{#if item.update}
+						<ContextMenu.Item
+							class="gap-2"
+							disabled={actionInFlight}
+							onSelect={() => void handleStackUpdate()}
+						>
+							<span class="icon-[mdi--arrow-up-circle-outline] h-4 w-4"></span>
+							Update
+						</ContextMenu.Item>
+					{/if}
+					<ContextMenu.Item
+						class="gap-2"
+						onclick={() => {
+							renameStackTitle = item.label;
+							renameStackOpen = true;
+						}}
+					>
+						<span class="icon-[mdi--rename-outline] h-4 w-4"></span>
+						Rename
+					</ContextMenu.Item>
+					<ContextMenu.Separator />
+					<ContextMenu.Item
+						class="gap-2 text-destructive"
+						onclick={() => {
+							deleteStackVolumes = false;
+							deleteStackOpen = true;
+						}}
+					>
+						<span class="icon-[mdi--delete-outline] h-4 w-4"></span>
+						Delete
+					</ContextMenu.Item>
 				{:else if item.resourceType === 'jail-template'}
 					<ContextMenu.Item class="gap-2" onclick={() => (viewTemplateOpen = true)}>
 						<span class="icon-[mdi--eye-outline] h-4 w-4"></span>
@@ -771,6 +909,56 @@
 			</Dialog.Footer>
 		</Dialog.Content>
 	</Dialog.Root>
+{/if}
+
+{#if isStack}
+	<Dialog.Root bind:open={renameStackOpen}>
+		<Dialog.Content class="max-w-md">
+			<Dialog.Header>
+				<Dialog.Title>
+					<div class="flex items-center gap-2">
+						<span class="icon-[lucide--layers]"></span>
+						<span>Rename Stack</span>
+					</div>
+				</Dialog.Title>
+			</Dialog.Header>
+
+			<CustomValueInput
+				label="Name"
+				placeholder={item.stack ?? ''}
+				bind:value={renameStackTitle}
+				disabled={renameStackLoading}
+				classes="space-y-2"
+			/>
+
+			<Dialog.Footer>
+				<Button size="sm" onclick={() => void handleRenameStack()} disabled={renameStackLoading}>
+					{#if renameStackLoading}
+						<span class="icon-[mdi--loading] h-4 w-4 animate-spin"></span>
+					{:else}
+						Rename
+					{/if}
+				</Button>
+			</Dialog.Footer>
+		</Dialog.Content>
+	</Dialog.Root>
+
+	<AlertDialog
+		bind:open={deleteStackOpen}
+		names={{
+			parent: 'the stack',
+			element: `${item.label} (${item.children?.length ?? 0} containers)`
+		}}
+		actions={{ onConfirm: handleDeleteStack, onCancel: () => (deleteStackOpen = false) }}
+		confirmLabel="Delete"
+		loadingLabel="Deleting..."
+	>
+		<CustomCheckbox
+			label="Delete Volumes"
+			bind:checked={deleteStackVolumes}
+			classes="flex items-center gap-2"
+		/>
+	</AlertDialog>
 {/if}
 
 {#if item.resourceType === 'vm' && item.resourceId}

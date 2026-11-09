@@ -153,8 +153,8 @@ func TestIntegrationContainerLifecycleRealPodman(t *testing.T) {
 	if got := rules(detail.RuntimeID); racct && (!strings.Contains(got, "pcpu:deny=100") || !strings.Contains(got, "memoryuse:deny=268435456")) {
 		t.Fatal("limits not applied", got)
 	}
-	if cpu, memory, err := usage(ctx, detail.Container); racct && (err != nil || memory <= 0 || cpu < 0) {
-		t.Fatal("usage unavailable", cpu, memory, err)
+	if current, err := readUsage(ctx, detail.RuntimeID); racct && (err != nil || current.memory <= 0) {
+		t.Fatal("usage unavailable", current, err)
 	}
 
 	spec := containerServiceInterfaces.SpecOf(detail.Container)
@@ -224,9 +224,9 @@ func TestIntegrationContainerLifecycleRealPodman(t *testing.T) {
 	if !downloaded {
 		t.Fatal("a pull must report how much has downloaded")
 	}
-	if root, err := service.pullsRoot(ctx, pool); err != nil {
+	if downloads, err := service.downloads(ctx, pool); err != nil {
 		t.Fatal(err)
-	} else if left, _ := filepath.Glob(filepath.Join(root, ".pull-*")); len(left) > 0 {
+	} else if left, _ := os.ReadDir(downloads); len(left) > 0 {
 		t.Fatal("a pull's downloads must be removed", left)
 	}
 

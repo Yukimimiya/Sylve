@@ -36,6 +36,7 @@ import (
 	networkServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/network"
 	systemServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/system"
 	"github.com/alchemillahq/sylve/internal/logger"
+	"github.com/alchemillahq/sylve/internal/metrics"
 	notifier "github.com/alchemillahq/sylve/internal/notifications"
 	clusterService "github.com/alchemillahq/sylve/internal/services/cluster"
 	"github.com/alchemillahq/sylve/pkg/storage/mount"
@@ -66,6 +67,7 @@ type Service struct {
 	liveStateRefreshMutex sync.Mutex
 	liveStateByCTID       map[uint]jailServiceInterfaces.State
 	liveStateUpdatedAt    time.Time
+	metricsCache          metrics.Cache[metrics.Jail]
 	hashCacheMutex        sync.RWMutex
 	ctidHashByCTID        map[uint]string
 
@@ -2198,10 +2200,14 @@ func (s *Service) UpdateName(ctID uint, name string) error {
 // marshalJailJSON records the root's mountpoint next to the jail, so a copy
 // received under another mountpoint can rebase its fstab.
 func marshalJailJSON(jail *jailModels.Jail, mountPoint string) ([]byte, error) {
+	// Runtime state would rewrite the file, and dirty the dataset, on every start and stop.
+	stable := *jail
+	stable.StartedAt, stable.StoppedAt, stable.IntentionallyStopped, stable.UpdatedAt = nil, nil, false, time.Time{}
+	stable.StartLogs, stable.StopLogs = "", ""
 	return json.MarshalIndent(struct {
 		*jailModels.Jail
 		RootMountpoint string `json:"rootMountpoint"`
-	}{jail, mountPoint}, "", "  ")
+	}{&stable, mountPoint}, "", "  ")
 }
 
 func (s *Service) WriteJailJSON(ctId uint) error {
@@ -2233,7 +2239,7 @@ func (s *Service) WriteJailJSON(ctId uint) error {
 		return fmt.Errorf("failed_to_marshal_jail_to_json: %w", err)
 	}
 
-	if err := utils.AtomicWriteFile(jailJsonPath, jailJsonData, 0644); err != nil {
+	if err := utils.WriteFileIfChanged(jailJsonPath, jailJsonData, 0644); err != nil {
 		return fmt.Errorf("failed_to_write_jail_json_file: %w", err)
 	}
 

@@ -49,6 +49,7 @@ type Container struct {
 	ID          uint   `json:"id" gorm:"primaryKey"`
 	OCID        uint   `json:"ocId" gorm:"uniqueIndex;not null"`
 	Name        string `json:"name" gorm:"uniqueIndex;not null"`
+	Title       string `json:"title"`
 	Description string `json:"description"`
 	Pool        string `json:"pool" gorm:"not null"`
 
@@ -83,6 +84,11 @@ type Container struct {
 	WebHTTPS   bool   `json:"webHttps"`
 	CatalogApp string `json:"catalogApp"`
 	Stack      string `json:"stack" gorm:"index"`
+	StackTitle string `json:"stackTitle"`
+	Service    string `json:"service"`
+	// UpdateDigest is the newer digest the image's tag points at in its
+	// registry, found by the update check; empty when it's current or unknown.
+	UpdateDigest string `json:"updateDigest"`
 
 	RuntimeID       string    `json:"runtimeId"`
 	CreationPending bool      `json:"creationPending" gorm:"not null;default:false"`

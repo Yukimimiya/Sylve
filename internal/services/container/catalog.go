@@ -5,6 +5,9 @@ package container
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -49,6 +52,7 @@ var (
 	catalogLogo     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*\.(svg|png)$`)
 	catalogVars     = regexp.MustCompile(`\$\{([A-Za-z0-9_]+)(?::-([^}]*))?\}`)
 	catalogLabelEnd = regexp.MustCompile(` \(|\s+[—–]\s+|\. |; |: |, (e\.g\.|such as) `)
+	catalogExample  = regexp.MustCompile(`^E\.g\. (.+?)(?:\.\s| \(|\.?$)`)
 
 	catalogNameRegex = regexp.MustCompile(`[^A-Za-z0-9-]+`)
 	volumeNameRegex  = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
@@ -173,6 +177,25 @@ type catalogVariable struct {
 		Mode string `yaml:"mode"`
 	} `yaml:"host_permissions"`
 	Values map[string]string `yaml:"values"`
+	Format string            `yaml:"-"`
+	Login  bool              `yaml:"-"`
+}
+
+// catalogFixes corrects settings whose manifests don't say enough: keys an
+// image checks more strictly, values marked as secrets to make up by mistake,
+// and passwords to sign in with that aren't the manifest's login. Format
+// "base64" is 32 random bytes in base64; secrets are otherwise 32 in hex.
+var catalogFixes = map[string]map[string]catalogVariable{
+	"daemonless/weavestream": {"JWT_SIGNING_KEY": {Format: "base64"}, "MFA_ENCRYPTION_KEY": {Format: "base64"},
+		"PASSWORD_ENCRYPTION_KEY": {Format: "base64"}, "INTEGRATION_SECRET_KEY": {Format: "base64"},
+		"SMTP_SECRET_KEY": {Format: "base64"}, "COOKIE_SIGNING_KEY": {Format: "base64"}, "CSRF_SIGNING_KEY": {Format: "base64"}},
+	"daemonless/openssh-server": {"PUBLIC_KEY": {Type: "string"}, "PASSWORD_ACCESS": {Type: "string", Default: "false"}},
+	"daemonless/erpnext":        {"ADMIN_PASSWORD": {Login: true}},
+	"daemonless/librenms":       {"ADMIN_PASSWORD": {Login: true}},
+	"daemonless/openobserve":    {"ZO_ROOT_USER_PASSWORD": {Login: true}},
+	"daemonless/qbittorrent":    {"WEBUI_PASSWORD": {Login: true}},
+	"daemonless/stalwart":       {"ADMIN_SECRET": {Login: true}},
+	"daemonless/wagtail":        {"WAGTAIL_SUPERUSER_PASSWORD": {Login: true}},
 }
 
 type catalogChoice struct {
@@ -361,6 +384,20 @@ func (s *Service) catalogManifest(ctx context.Context, source, id string) (conta
 	if len(manifest.Services) == 0 {
 		return app, manifest, fmt.Errorf("catalog_app_has_no_containers: %s", id)
 	}
+	for i := range manifest.Fjord.Variables {
+		variable := &manifest.Fjord.Variables[i]
+		fix := catalogFixes[source+"/"+id][variable.Name]
+		variable.Type, variable.Default = cmp.Or(fix.Type, variable.Type), cmp.Or(fix.Default, variable.Default)
+		variable.Format, variable.Login = fix.Format, fix.Login
+	}
+	// What a choice asks for is the person's own, such as their database's password.
+	for _, choice := range manifest.Fjord.Choices {
+		for _, option := range choice.Options {
+			for i := range option.Ask {
+				option.Ask[i].Generate = new(bool)
+			}
+		}
+	}
 	return app, manifest, nil
 }
 
@@ -381,7 +418,8 @@ func (s *Service) CatalogTemplate(ctx context.Context, source, id string) (conta
 			maps.Copy(every.Services, added)
 		}
 	}
-	directories, protocols := catalogDirectories(every), catalogPortProtocols(every)
+	directories, folders := catalogDirectories(every)
+	protocols := catalogPortProtocols(every)
 	defaults := map[string]string{}
 	for _, variable := range manifest.Fjord.Variables {
 		defaults[variable.Name] = variable.Default
@@ -390,11 +428,14 @@ func (s *Service) CatalogTemplate(ctx context.Context, source, id string) (conta
 	describe := func(variable catalogVariable) containerServiceInterfaces.CatalogVariable {
 		value := catalogDefault(variable.Default)
 		if generatedSecret(variable) && value == "" {
-			value = utils.GenerateRandomString(24)
+			value = catalogSecret(manifest, variable.Name)
 		}
 		item := containerServiceInterfaces.CatalogVariable{Name: variable.Name, Type: variable.Type, Default: value,
 			Optional: variable.Optional, Advanced: variable.Level == "advanced", Protocol: protocols[variable.Name], Values: variable.Values}
 		item.Label, item.Hint = catalogLabel(variable.Name, variable.Label)
+		if example := catalogExample.FindStringSubmatch(item.Hint); example != nil {
+			item.Placeholder = example[1]
+		}
 		if target, ok := directories[variable.Name]; ok {
 			item.Target, item.Volume = target, volumeName(target, variable.Name)
 			item.Owner = appOwner
@@ -402,6 +443,7 @@ func (s *Service) CatalogTemplate(ctx context.Context, source, id string) (conta
 				item.Owner = fmt.Sprintf("%d:%d", permissions.UID, permissions.GID)
 			}
 		}
+		item.Folders = folders[variable.Name]
 		return item
 	}
 	originals := []string{}
@@ -420,6 +462,7 @@ func (s *Service) CatalogTemplate(ctx context.Context, source, id string) (conta
 	for _, service := range base.order() {
 		template.Containers = append(template.Containers, names[service])
 	}
+	template.Stack = stack
 	for _, choice := range manifest.Fjord.Choices {
 		item := containerServiceInterfaces.CatalogChoice{ID: choice.ID, Label: choice.Label, Doc: choice.Doc, Default: choice.Default}
 		for _, option := range choice.Options {
@@ -515,10 +558,15 @@ func (r catalogServices) main(app string, networking map[string]string, ordered 
 func (r catalogServices) names(app, stack string, expand func(string) string) map[string]string {
 	names := map[string]string{}
 	for name, service := range r.services {
-		if stack == "" {
+		app := catalogName(app)
+		switch member := strings.TrimPrefix(catalogName(name), app+"-"); {
+		case stack == "":
 			names[name] = catalogName(cmp.Or(expand(service.ContainerName), app))
-		} else {
-			names[name] = stackContainerName(stack, name)
+		case member == app:
+			names[name] = stack
+		default:
+			// immich-server in a stack named immich-2 is immich-2-server.
+			names[name] = stackContainerName(stack, member)
 		}
 	}
 	return names
@@ -612,8 +660,10 @@ func catalogDefault(value string) string {
 	return value
 }
 
+// generatedSecret leaves optional secrets to the image, which makes its own,
+// in the format it wants, on first start; as fjord does.
 func generatedSecret(variable catalogVariable) bool {
-	return variable.Type == "secret" && (variable.Generate == nil || *variable.Generate)
+	return variable.Type == "secret" && !variable.Optional && (variable.Generate == nil || *variable.Generate)
 }
 
 func (s *Service) RenderCatalogApp(ctx context.Context, source, id string, req containerServiceInterfaces.CatalogRenderRequest) (containerServiceInterfaces.CatalogPlan, error) {
@@ -641,8 +691,9 @@ func (s *Service) RenderCatalogApp(ctx context.Context, source, id string, req c
 		return plan, err
 	}
 
+	directories, folders := catalogDirectories(catalogManifest{Services: resolved.services})
 	r := catalogRender{os: app.OS, values: map[string]string{}, types: map[string]string{}, optional: map[string]bool{},
-		owners: map[string][2]string{}, directories: catalogDirectories(catalogManifest{Services: resolved.services})}
+		owners: map[string][2]string{}}
 	for _, variable := range variables {
 		r.values[variable.Name], r.types[variable.Name], r.optional[variable.Name] = catalogDefault(variable.Default), variable.Type, variable.Optional
 		if permissions := variable.HostPermissions; permissions != nil {
@@ -683,26 +734,43 @@ func (s *Service) RenderCatalogApp(ctx context.Context, source, id string, req c
 	}
 	for _, name := range secrets {
 		if r.values[name] == "" {
-			r.values[name] = utils.GenerateRandomString(24)
+			r.values[name] = catalogSecret(manifest, name)
 		}
 	}
+	stackTitle := app.Name
 	if len(resolved.services) > 1 {
 		plan.Stack = catalogName(app.ID)
+		if req.Stack != "" && req.Stack != plan.Stack {
+			if !nameRegex.MatchString(req.Stack) {
+				return plan, fmt.Errorf("invalid_stack_name")
+			}
+			plan.Stack, stackTitle = req.Stack, req.Stack
+		}
 	}
 	names := resolved.names(app.ID, plan.Stack, r.expand)
 	for service, variable := range resolved.hostnames {
-		if name, ok := names[service]; ok && plan.Stack != "" {
-			r.values[variable], r.types[variable] = name, cmp.Or(r.types[variable], "string")
+		if _, ok := names[service]; ok && plan.Stack != "" {
+			r.values[variable], r.types[variable] = serviceHost(service), cmp.Or(r.types[variable], "string")
 		}
 	}
 	for _, variable := range variables {
-		_, directory := r.directories[variable.Name]
-		if !variable.Optional && !directory && strings.TrimSpace(r.values[variable.Name]) == "" {
+		_, directory := directories[variable.Name]
+		_, parent := folders[variable.Name]
+		if !variable.Optional && !directory && !parent && strings.TrimSpace(r.values[variable.Name]) == "" {
 			label, _ := catalogLabel(variable.Name, variable.Label)
 			return plan, fmt.Errorf("catalog_setting_required: %s", label)
 		}
 	}
 	r.appOwner = catalogOwner(source, r.values)
+	madeSecrets := map[string]string{}
+	for name, kind := range r.types {
+		if kind == "secret" && r.values[name] != "" {
+			madeSecrets[name] = r.values[name]
+		}
+	}
+	for _, name := range secrets {
+		madeSecrets[name] = r.values[name]
+	}
 
 	ordered := resolved.order()
 	main := resolved.main(app.ID, manifest.Fjord.Networking, ordered)
@@ -713,12 +781,15 @@ func (s *Service) RenderCatalogApp(ctx context.Context, source, id string, req c
 			return plan, err
 		}
 		create := containerServiceInterfaces.CreateRequest{Name: names[name], Description: fmt.Sprintf("%s for %s", name, app.Name),
-			Spec: spec, StartAfterCreate: true, CatalogApp: source + "/" + id, Stack: plan.Stack}
+			Spec: spec, StartAfterCreate: true, CatalogApp: source + "/" + id, Stack: plan.Stack, Secrets: maps.Clone(madeSecrets)}
 		switch {
 		case plan.Stack != "":
-			create.Network = plan.Stack
+			create.Network, create.StackTitle, create.Service = plan.Stack, stackTitle, serviceHost(name)
 		case service.NetworkMode == "host":
 			create.Network, create.Ports = containerServiceInterfaces.HostNetwork, nil
+		}
+		if plan.Stack == "" {
+			create.Title = app.Name
 		}
 		if len(service.EnvFile) > 0 {
 			for _, setting := range slices.Sorted(maps.Keys(r.types)) {
@@ -736,13 +807,12 @@ func (s *Service) RenderCatalogApp(ctx context.Context, source, id string, req c
 }
 
 type catalogRender struct {
-	os          string
-	values      map[string]string
-	types       map[string]string
-	optional    map[string]bool
-	owners      map[string][2]string
-	directories map[string]string
-	appOwner    string
+	os       string
+	values   map[string]string
+	types    map[string]string
+	optional map[string]bool
+	owners   map[string][2]string
+	appOwner string
 }
 
 func (r catalogRender) expand(text string) string {
@@ -784,8 +854,11 @@ func (r catalogRender) spec(service composeService) (containerServiceInterfaces.
 		if len(parts) < 2 {
 			return spec, fmt.Errorf("invalid_catalog_volume: %s", volume)
 		}
-		variable := strings.TrimSuffix(strings.TrimPrefix(parts[0], "${"), "}")
+		variable, folder, _ := strings.Cut(strings.TrimPrefix(parts[0], "${"), "}")
 		source, target := r.expand(parts[0]), r.expand(parts[1])
+		if folder != "" && source == folder {
+			source = "." + folder
+		}
 		mount := containerModels.Mount{Type: containerModels.MountVolume, Source: source, Target: target,
 			ReadOnly: len(parts) > 2 && parts[2] == "ro"}
 		switch {
@@ -831,6 +904,12 @@ func (r catalogRender) finishMain(create *containerServiceInterfaces.CreateReque
 	create.Description = app.Description
 	if login := manifest.Fjord.Login; login != nil {
 		create.Description += fmt.Sprintf("\n\nLogin: %s / %s", r.expand(login.User), r.expand(login.Password))
+	}
+	for _, variable := range manifest.Fjord.Variables {
+		if value := r.values[variable.Name]; variable.Login && value != "" {
+			label, _ := catalogLabel(variable.Name, variable.Label)
+			create.Description += fmt.Sprintf("\n\n%s: %s", label, value)
+		}
 	}
 	for _, candidate := range app.Variants {
 		if candidate.ID == variant || variant == "" && candidate.Default {
@@ -885,18 +964,30 @@ func renderPort(port composePort, expand func(string) string) (containerModels.P
 	return mapping, err == nil && err2 == nil && hostPort > 0 && containerPort > 0
 }
 
-func catalogDirectories(manifest catalogManifest) map[string]string {
-	directories := map[string]string{}
+// catalogDirectories maps the settings a volume names to its target, and those
+// it names the parent of, as in ${DATA_DIR}/postgres, to their folders.
+func catalogDirectories(manifest catalogManifest) (map[string]string, map[string][]string) {
+	directories, folders := map[string]string{}, map[string][]string{}
 	for _, service := range manifest.Services {
 		for _, volume := range service.Volumes {
 			raw, _, _ := strings.Cut(volume, "#")
 			parts := strings.Split(strings.TrimSpace(raw), ":")
-			if name, ok := strings.CutPrefix(parts[0], "${"); ok && len(parts) > 1 {
-				directories[strings.TrimSuffix(name, "}")] = parts[1]
+			name, ok := strings.CutPrefix(parts[0], "${")
+			if !ok || len(parts) < 2 {
+				continue
+			}
+			name, folder, _ := strings.Cut(name, "}")
+			folder = strings.TrimPrefix(folder, "/")
+			switch {
+			case folder == "":
+				directories[name] = parts[1]
+			case !slices.Contains(folders[name], folder):
+				folders[name] = append(folders[name], folder)
+				slices.Sort(folders[name])
 			}
 		}
 	}
-	return directories
+	return directories, folders
 }
 
 func catalogOwner(source string, values map[string]string) string {
@@ -946,4 +1037,25 @@ func catalogName(name string) string {
 		name = name[:63]
 	}
 	return name
+}
+
+func serviceHost(service string) string {
+	return strings.ToLower(catalogName(service))
+}
+
+// catalogSecret makes up a secret as fjord does, 32 random bytes in hex, unless
+// catalogFixes says otherwise; the manifest's login password stays short
+// enough to type.
+func catalogSecret(manifest catalogManifest, name string) string {
+	if login := manifest.Fjord.Login; login != nil && login.Password == "${"+name+"}" {
+		return utils.GenerateRandomString(24)
+	}
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	if slices.ContainsFunc(manifest.Fjord.Variables, func(variable catalogVariable) bool {
+		return variable.Name == name && variable.Format == "base64"
+	}) {
+		return base64.StdEncoding.EncodeToString(key)
+	}
+	return hex.EncodeToString(key)
 }

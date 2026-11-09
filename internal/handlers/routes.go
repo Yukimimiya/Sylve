@@ -46,6 +46,7 @@ import (
 	vmHandlers "github.com/alchemillahq/sylve/internal/handlers/vm"
 	vncHandler "github.com/alchemillahq/sylve/internal/handlers/vnc"
 	zfsHandlers "github.com/alchemillahq/sylve/internal/handlers/zfs"
+	"github.com/alchemillahq/sylve/internal/metrics"
 	authServicePkg "github.com/alchemillahq/sylve/internal/services/auth"
 	"github.com/alchemillahq/sylve/internal/services/certificates"
 	"github.com/alchemillahq/sylve/internal/services/cluster"
@@ -127,6 +128,13 @@ func RegisterRoutes(r *gin.Engine,
 	migrationService *migration.Service,
 	telemetryDB *gorm.DB,
 ) {
+	sources := metrics.Sources{Jails: jailService.MetricsSnapshot, VMs: libvirtService.MetricsSnapshot, ZFS: zfsService.MetricsSnapshot}
+	if lifecycleService.Container != nil {
+		sources.Containers = lifecycleService.Container.MetricsSnapshot
+	}
+	// Reserve the path even when disabled so the UI fallback cannot return HTML.
+	r.Any("/metrics", gin.WrapH(metrics.NewHandler(config.GetMetricsConfig(), sources)))
+
 	api := r.Group("/api")
 	api.Use(middleware.ClusterMutationAdmission(clusterService))
 	api.Use(clusterHandlers.StampAppliedIndex(clusterService))
@@ -205,6 +213,8 @@ func RegisterRoutes(r *gin.Engine,
 			containers.GET("/simple", containerHandlers.ListContainersSimple(containerService))
 			containers.POST("", containerHandlers.CreateContainer(lifecycleService))
 			containers.POST("/stack", containerHandlers.CreateStack(lifecycleService))
+			containers.PATCH("/stack/:stack", containerHandlers.RenameContainerStack(containerService))
+			containers.POST("/updates/check", containerHandlers.CheckContainerUpdates(containerService))
 			containers.GET("/ports", containerHandlers.ListUsedPorts(containerService))
 			containers.GET("/networks", containerHandlers.ListNetworks(containerService))
 			containers.POST("/networks", containerHandlers.CreateNetwork(containerService))
@@ -1066,8 +1076,6 @@ func RegisterRoutes(r *gin.Engine,
 			targets.GET("/:id/readiness", leaderOnly, clusterHandlers.BackupTargetReadiness(clusterService))
 			targets.GET("/:id/datasets", clusterHandlers.BackupTargetDatasets(zeltaService))
 			targets.GET("/:id/datasets/snapshots", clusterHandlers.BackupTargetDatasetSnapshots(zeltaService))
-			targets.GET("/:id/datasets/jail-metadata", clusterHandlers.BackupTargetDatasetJailMetadata(zeltaService))
-			targets.GET("/:id/datasets/vm-metadata", clusterHandlers.BackupTargetDatasetVMMetadata(zeltaService))
 			targets.GET("/:id/running-jobs", leaderOnly, clusterHandlers.BackupTargetRunningJobIDs(clusterService))
 			targets.POST("/:id/restore", clusterHandlers.RestoreBackupTargetDataset(clusterService, zeltaService))
 		}

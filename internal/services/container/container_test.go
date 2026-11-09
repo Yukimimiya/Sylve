@@ -4,7 +4,9 @@ package container
 
 import (
 	"cmp"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -75,6 +77,21 @@ func TestCreateSpecIsWhatPodmanCreateFlagsWouldSend(t *testing.T) {
 		"mounts": [{"destination": "/data", "type": "nullfs", "source": "/tank/sylve/containers/7/data", "options": ["ro"]}],
 		"umask": "0022", "restart_policy": "on-failure", "restart_tries": 3,
 		"entrypoint": ["/entry"], "command": ["nginx", "-g", "daemon off;"]}`, runtime.GOARCH))
+
+	stack := &containerModels.Network{ID: 2, Name: "weavestream", Bridge: "sylc2"}
+	member := containerModels.Container{OCID: 9, Name: "API", Image: "api", OS: "freebsd", Network: stack,
+		Stack: "weavestream", Service: "api", Restart: "no", StopTimeout: 10}
+	if aliases := newCreateSpec(member, nil).Networks["sylve-weavestream"].Aliases; !slices.Equal(aliases, []string{"api"}) {
+		t.Fatal("a stack member answers to its service name, once", aliases)
+	}
+	member.Name = "Backend"
+	if aliases := newCreateSpec(member, nil).Networks["sylve-weavestream"].Aliases; !slices.Equal(aliases, []string{"backend", "api"}) {
+		t.Fatal("renamed, a stack member still answers to its service name", aliases)
+	}
+	member.Network = network
+	if aliases := newCreateSpec(member, nil).Networks["sylve-default"].Aliases; !slices.Equal(aliases, []string{"backend"}) {
+		t.Fatal("service names stay on the stack's own network", aliases)
+	}
 
 	record = containerModels.Container{OCID: 8, Name: "Host", Image: "redis", OS: "freebsd", Entrypoint: []string{},
 		Restart: "no", StopTimeout: 5}
@@ -279,6 +296,300 @@ func TestCatalogDirectoriesLeftEmptyBecomeVolumes(t *testing.T) {
 	}
 }
 
+func TestCatalogHintExamplesBecomePlaceholders(t *testing.T) {
+	service := newCatalogService(t)
+	for app, want := range map[string]map[string]string{
+		"adguardhome-sync": {"ORIGIN_URL": "http://192.168.1.2:3000", "REPLICA1_URL": ""},
+		"authelia-server":  {"PUBLIC_URL": "https://auth.example.com"},
+		"memcached":        {"MEMCACHED_ARGS": "-m 256 -c 2048"},
+		"vikunja":          {"VIKUNJA_SERVICE_PUBLICURL": "http://192.168.1.10:3456/"},
+		"plex":             {"ALLOWED_NETWORKS": "192.168.1.0/24"},
+	} {
+		template, err := service.CatalogTemplate(t.Context(), "daemonless", app)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, variable := range template.Variables {
+			if placeholder, ok := want[variable.Name]; ok && variable.Placeholder != placeholder {
+				t.Errorf("%s %s: placeholder %q, want %q", app, variable.Name, variable.Placeholder, placeholder)
+			}
+		}
+	}
+}
+
+func TestCatalogSecretsTakeTheFormatTheirImageWants(t *testing.T) {
+	var manifest catalogManifest
+	manifest.Fjord.Variables = []catalogVariable{{Name: "PASSWORD_ENCRYPTION_KEY", Format: "base64"}}
+	key, err := base64.StdEncoding.DecodeString(catalogSecret(manifest, "PASSWORD_ENCRYPTION_KEY"))
+	if err != nil || len(key) != 32 {
+		t.Fatal("fixed keys are base64 of exactly 32 bytes", len(key), err)
+	}
+	if password := catalogSecret(manifest, "POSTGRES_PASSWORD"); len(password) != 64 || strings.Trim(password, "0123456789abcdef") != "" {
+		t.Fatal("other secrets stay hex, safe in URLs", password)
+	}
+
+	service := newCatalogService(t)
+	plan, err := renderDefaults(t, service, "daemonless/plausible", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, create := range plan.Containers {
+		if env := envOf(create); env["TOTP_VAULT_KEY"] != "" || env["SECRET_KEY_BASE"] != "" {
+			t.Fatal("optional secrets are left for the image to make", create.Name, env["TOTP_VAULT_KEY"])
+		}
+	}
+
+	template, err := service.CatalogTemplate(t.Context(), "daemonless", "openssh-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, variable := range template.Variables {
+		if variable.Name == "PUBLIC_KEY" && (variable.Type != "string" || variable.Default != "") ||
+			variable.Name == "PASSWORD_ACCESS" && (variable.Type != "string" || variable.Default != "false") {
+			t.Fatal("a public key and a switch are not secrets to make up", variable)
+		}
+	}
+	if _, err := renderDefaults(t, service, "daemonless/openssh-server", nil, nil); err == nil || !strings.Contains(err.Error(), "catalog_setting_required") {
+		t.Fatal("the public key is the person's to give", err)
+	}
+
+	if plan, err = renderDefaults(t, service, "daemonless/erpnext", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(plan.Containers, func(create containerServiceInterfaces.CreateRequest) bool {
+		password := envOf(create)["ADMIN_PASSWORD"]
+		return password != "" && strings.Contains(create.Description, password)
+	}) {
+		t.Fatal("a made-up admin password is shown with the app", plan.Containers)
+	}
+
+	template, err = service.CatalogTemplate(t.Context(), "daemonless", "gitea")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, choice := range template.Choices {
+		for _, option := range choice.Options {
+			for _, variable := range option.Ask {
+				if variable.Type == "secret" && variable.Default != "" {
+					t.Fatal("what a choice asks for is not made up", option.ID, variable)
+				}
+			}
+		}
+	}
+	if _, err := renderDefaults(t, service, "daemonless/gitea", map[string]string{"GITEA__database__HOST": "db", "GITEA__database__USER": "gitea",
+		"GITEA__database__NAME": "gitea"}, map[string]string{"database": "external"}); err == nil || !strings.Contains(err.Error(), "catalog_setting_required") {
+		t.Fatal("an external database's password is the person's to give", err)
+	}
+}
+
+func TestReinstallsReuseTheSecretsKeptWithTheirData(t *testing.T) {
+	made, old := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	creates := []containerServiceInterfaces.CreateRequest{
+		{Name: "db", Spec: containerServiceInterfaces.Spec{Env: []containerModels.EnvVar{{Name: "POSTGRES_PASSWORD", Value: made}, {Name: "POSTGRES_USER", Value: "app"}}},
+			Secrets: map[string]string{"POSTGRES_PASSWORD": made, "PIN": "1234"}},
+		{Name: "api", Spec: containerServiceInterfaces.Spec{Env: []containerModels.EnvVar{{Name: "DATABASE_URL", Value: "postgresql://app:" + made + "@postgres:5432/app"}, {Name: "PIN", Value: "1234"}}},
+			Secrets: map[string]string{"POSTGRES_PASSWORD": made, "PIN": "1234"}},
+	}
+
+	dirs := []string{t.TempDir(), t.TempDir()}
+	if restoreSecrets(creates, readKeptSecrets(dirs)) {
+		t.Fatal("nothing is put back without kept data")
+	}
+	if err := writeKeptSecrets(dirs[1:], map[string]string{"POSTGRES_PASSWORD": old, "PIN": "9999"}); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(dirs[1], keptSecretsFile)); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatal("kept secrets are root's alone", info, err)
+	}
+	if !restoreSecrets(creates, readKeptSecrets(dirs)) {
+		t.Fatal("kept secrets are put back")
+	}
+	db, api := envOf(creates[0]), envOf(creates[1])
+	if db["POSTGRES_PASSWORD"] != old || api["DATABASE_URL"] != "postgresql://app:"+old+"@postgres:5432/app" || creates[1].Secrets["POSTGRES_PASSWORD"] != old {
+		t.Fatal("a kept password replaces the made-up one wherever it went", db, api)
+	}
+	if db["POSTGRES_USER"] != "app" || api["PIN"] != "1234" {
+		t.Fatal("short values are left alone, as they could turn up by chance", db, api)
+	}
+
+	plan, err := renderDefaults(t, newCatalogService(t), "daemonless/gitea", nil, map[string]string{"database": "postgres"})
+	if err != nil || len(plan.Containers) != 2 {
+		t.Fatal(plan, err)
+	}
+	for _, create := range plan.Containers {
+		if password := create.Secrets["GITEA__database__PASSWD"]; len(password) != 64 {
+			t.Fatal("every container says which secrets it was made with", create.Name, create.Secrets)
+		}
+	}
+}
+
+func TestImagesNameTheirRegistryRepositoryAndTag(t *testing.T) {
+	for image, want := range map[string][3]string{
+		"redis":                           {"docker.io", "library/redis", "latest"},
+		"nginx:1.27":                      {"docker.io", "library/nginx", "1.27"},
+		"docker.io/library/busybox:1.36":  {"docker.io", "library/busybox", "1.36"},
+		"ghcr.io/daemonless/postgres:16":  {"ghcr.io", "daemonless/postgres", "16"},
+		"localhost:5000/team/app":         {"localhost:5000", "team/app", "latest"},
+		"daemonless/redis:pkg-latest":     {"docker.io", "daemonless/redis", "pkg-latest"},
+		"registry.example.com:8443/a/b:c": {"registry.example.com:8443", "a/b", "c"},
+	} {
+		if registry, repository, tag, ok := registryReference(image); !ok || [3]string{registry, repository, tag} != want {
+			t.Errorf("registryReference(%q) = %s %s %s %v, want %v", image, registry, repository, tag, ok, want)
+		}
+	}
+	if _, _, _, ok := registryReference("ghcr.io/daemonless/redis@sha256:abc"); ok {
+		t.Error("an image pinned to a digest never updates")
+	}
+}
+
+func TestRegistryDigestAnswersTheTokenChallenge(t *testing.T) {
+	const digest = "sha256:f50c5936d39b627ff4621afaaf2bcbb0d526da660ae0f424711a25db16798127"
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/token" && r.URL.Query().Get("scope") == "repository:daemonless/redis:pull":
+			_, _ = w.Write([]byte(`{"token":"t"}`))
+		case r.URL.Path == "/v2/daemonless/redis/manifests/latest" && r.Header.Get("Authorization") == "Bearer t":
+			if !strings.Contains(r.Header.Get("Accept"), "application/vnd.oci.image.index.v1+json") {
+				t.Error("an index is asked for, so the digest matches what a tag pull records")
+			}
+			w.Header().Set("Docker-Content-Digest", digest)
+		case strings.HasPrefix(r.URL.Path, "/v2/"):
+			w.Header().Set("WWW-Authenticate", `Bearer realm="`+server.URL+`/token",service="test",scope="repository:daemonless/redis:pull"`)
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	client := registryClient
+	registryClient = server.Client()
+	defer func() { registryClient = client }()
+
+	service := newTestService(t)
+	host := strings.TrimPrefix(server.URL, "https://")
+	if got, err := service.registryDigest(t.Context(), host+"/daemonless/redis:latest"); err != nil || got != digest {
+		t.Fatal("the tag's digest is asked for with the token the registry hands out", got, err)
+	}
+	if _, err := service.registryDigest(t.Context(), host+"/daemonless/missing:latest"); err == nil {
+		t.Fatal("a registry that won't say leaves the update unknown")
+	}
+}
+
+func TestStacksInstallAgainUnderANameOfTheirOwn(t *testing.T) {
+	service := newCatalogService(t)
+	template, err := service.CatalogTemplate(t.Context(), "daemonless", "immich")
+	if err != nil || template.Stack != "immich" {
+		t.Fatal("the template names the stack it installs by default", template.Stack, err)
+	}
+	values := map[string]string{}
+	for _, variable := range template.Variables {
+		values[variable.Name] = variable.Default
+	}
+	plan, err := service.RenderCatalogApp(t.Context(), "daemonless", "immich",
+		containerServiceInterfaces.CatalogRenderRequest{Values: values, Stack: "immich-2"})
+	if err != nil || plan.Stack != "immich-2" {
+		t.Fatal(plan.Stack, err)
+	}
+	names := []string{}
+	for _, create := range plan.Containers {
+		names = append(names, create.Name)
+		if create.Stack != "immich-2" || create.Network != "immich-2" || create.StackTitle != "immich-2" {
+			t.Fatal("a second copy has its own network and title", create.Name, create.Network, create.StackTitle)
+		}
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{"immich-2-database", "immich-2-machine-learning", "immich-2-redis", "immich-2-server"}) {
+		t.Fatal("its containers take the stack's name in place of the app's", names)
+	}
+	if _, err := service.RenderCatalogApp(t.Context(), "daemonless", "immich",
+		containerServiceInterfaces.CatalogRenderRequest{Values: values, Stack: "my stack"}); err == nil {
+		t.Fatal("a stack name must work as a network and container name")
+	}
+}
+
+func TestContainersHaveATitleApartFromTheirName(t *testing.T) {
+	service := newTestService(t)
+	ctx := t.Context()
+	record := containerModels.Container{OCID: 401, Name: "weavestream-web", Pool: "tank", Image: "web", RuntimeID: "x"}
+	if err := service.DB.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	title := "  Web (public) "
+	if err := service.UpdateOptions(ctx, 401, containerServiceInterfaces.OptionsRequest{Title: &title}); err != nil {
+		t.Fatal(err)
+	}
+	if record, _ = service.record(ctx, 401); record.Title != "Web (public)" || record.Name != "weavestream-web" {
+		t.Fatal("a title is only a label; the name stays", record.Title, record.Name)
+	}
+	long := strings.Repeat("x", 64)
+	if err := service.UpdateOptions(ctx, 401, containerServiceInterfaces.OptionsRequest{Title: &long}); err == nil {
+		t.Fatal("titles are kept short")
+	}
+
+	if spec := containerServiceInterfaces.SpecOf(record); spec.Name != "weavestream-web" {
+		t.Fatal("an update keeps the name unless it changes it", spec.Name)
+	}
+	spec := containerServiceInterfaces.Spec{Name: "Web (public)", Image: "web", Network: containerServiceInterfaces.HostNetwork}
+	if _, _, err := service.normalizeSpec(ctx, spec); err == nil || !strings.Contains(err.Error(), "invalid_container_name") {
+		t.Fatal("a name must be one the network can use", err)
+	}
+}
+
+func TestCatalogParentFoldersLeftEmptyBecomeStackDatasets(t *testing.T) {
+	service := newCatalogService(t)
+	manifest := `services:
+  api:
+    image: api
+    volumes:
+      - ${DATA_DIR}/files:/files
+      - ${DATA_DIR}/db:/db
+  worker:
+    image: worker
+    volumes:
+      - ${DATA_DIR}/files:/files
+x-fjord:
+  variables:
+    - name: DATA_DIR
+      label: Folder for uploads and the database
+      type: path
+      default: /containers/app
+`
+	if err := os.WriteFile(filepath.Join(service.DataDir, "catalog", "daemonless", "manifests", "immich.yaml"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	template, err := service.CatalogTemplate(t.Context(), "daemonless", "immich")
+	if err != nil || len(template.Variables) != 1 || template.Variables[0].Target != "" ||
+		!slices.Equal(template.Variables[0].Folders, []string{"db", "files"}) {
+		t.Fatal("a setting holding several folders lists them", template.Variables, err)
+	}
+
+	for value, want := range map[string]func(containerModels.Mount) bool{
+		"": func(mount containerModels.Mount) bool {
+			return mount.Type == containerModels.MountDataset && mount.Source == "."+mount.Target && mount.Owner == "1000:1000"
+		},
+		"/srv/app": func(mount containerModels.Mount) bool {
+			return mount.Type == containerModels.MountPath && mount.Source == "/srv/app"+mount.Target
+		},
+	} {
+		plan, err := renderDefaults(t, service, "daemonless/immich", map[string]string{"DATA_DIR": value}, nil)
+		if err != nil {
+			t.Fatal("the folder setting may be left empty", err)
+		}
+		mounts := 0
+		for _, create := range plan.Containers {
+			for _, mount := range create.Mounts {
+				if mounts++; !want(mount) {
+					t.Fatal("left empty, each folder is a dataset under the stack; given, a folder in it", value, create.Name, mount)
+				}
+			}
+		}
+		if mounts != 3 {
+			t.Fatal("every service mounts its folders", value, plan.Containers)
+		}
+	}
+}
+
 func envOf(create containerServiceInterfaces.CreateRequest) map[string]string {
 	env := map[string]string{}
 	for _, variable := range create.Env {
@@ -315,10 +626,10 @@ func TestCatalogChoicesAddCompanionContainers(t *testing.T) {
 		t.Fatal("a stack's containers share its network, the companion started first", postgres.Name, gitea.Name, postgres.Network)
 	}
 	app, db := envOf(gitea), envOf(postgres)
-	if app["GITEA__database__DB_TYPE"] != "postgres" || app["GITEA__database__HOST"] != "gitea-postgres" ||
-		app["GITEA__database__NAME"] != "gitea" || len(app["GITEA__database__PASSWD"]) != 24 ||
+	if app["GITEA__database__DB_TYPE"] != "postgres" || app["GITEA__database__HOST"] != "postgres" ||
+		app["GITEA__database__NAME"] != "gitea" || len(app["GITEA__database__PASSWD"]) != 64 ||
 		db["POSTGRES_PASSWORD"] != app["GITEA__database__PASSWD"] || db["POSTGRES_DB"] != "gitea" || db["POSTGRES_USER"] != "gitea" {
-		t.Fatal("the companion is found by name and shares the generated password", app, db)
+		t.Fatal("the companion is found by service name and shares the generated password", app, db)
 	}
 	data := containerModels.Mount{Type: containerModels.MountVolume, Source: "data", Target: "/var/lib/postgresql/data", Owner: "1000:1000"}
 	if !slices.Contains(postgres.Mounts, data) || postgres.Annotations["org.freebsd.jail.allow.sysvipc"] != "true" {
@@ -390,7 +701,10 @@ func TestEveryCatalogAppRenders(t *testing.T) {
 	bichon, wireguard, assistant := specs["daemonless/bichon"], specs["daemonless/transmission-wireguard"], specs["daemonless/home-assistant"]
 	for feature, ok := range map[string]bool{
 		"long-form ports":   slices.Equal(bichon.Ports, []containerModels.Port{{Protocol: "tcp", HostPort: 15630, ContainerPort: 15630}}),
-		"generated secrets": len(bichon.Env) == 4 && bichon.Env[3].Name == "BICHON_ENCRYPT_PASSWORD" && len(bichon.Env[3].Value) == 24,
+		"generated secrets": len(bichon.Env) == 4 && bichon.Env[3].Name == "BICHON_ENCRYPT_PASSWORD" && len(bichon.Env[3].Value) == 64,
+		"typeable login passwords": slices.ContainsFunc(specs["daemonless/paperless-ngx"].Env, func(env containerModels.EnvVar) bool {
+			return env.Name == "PAPERLESS_ADMIN_PASSWORD" && len(env.Value) == 24
+		}),
 		"jail annotations":  wireguard.Annotations["org.freebsd.jail.vnet"] == "new",
 		"udp ports":         slices.Contains(wireguard.Ports, containerModels.Port{Protocol: "udp", HostPort: 51413, ContainerPort: 51413}),
 		"host network":      assistant.Network == containerServiceInterfaces.HostNetwork && len(assistant.Ports) == 0,
@@ -527,9 +841,12 @@ func TestCatalogStacksRenderTheirContainers(t *testing.T) {
 		containers[create.Name] = create
 	}
 	server, database := envOf(containers["immich-server"]), envOf(containers["immich-database"])
-	if server["DB_HOSTNAME"] != "immich-database" || server["REDIS_HOSTNAME"] != "immich-redis" ||
+	if server["DB_HOSTNAME"] != "database" || server["REDIS_HOSTNAME"] != "redis" ||
 		server["IMMICH_MACHINE_LEARNING_URL"] != "http://immich-machine-learning:3003" {
-		t.Fatal("containers find each other by name", server)
+		t.Fatal("containers find each other by service name, which renaming them keeps", server)
+	}
+	if create := containers["immich-database"]; create.Service != "database" || create.StackTitle != "Immich" {
+		t.Fatal("stack members keep their service and the stack its title", create.Service, create.StackTitle)
 	}
 	if server["DB_PASSWORD"] == "" || server["DB_PASSWORD"] != database["POSTGRES_PASSWORD"] {
 		t.Fatal("the server is given every setting, as its .env, and shares the generated password", server["DB_PASSWORD"], database["POSTGRES_PASSWORD"])
@@ -591,5 +908,20 @@ func TestStacksTakeFreeIDsAndShareANetwork(t *testing.T) {
 	}
 	if _, err := service.PrepareStack(ctx, request); err == nil || !strings.Contains(err.Error(), "catalog_stack_exists") {
 		t.Fatal("a stack is created once", err)
+	}
+
+	if err := service.RenameStack(ctx, "web", "  Web App "); err != nil {
+		t.Fatal(err)
+	}
+	var titles []string
+	if err := service.DB.Model(&containerModels.Container{}).Order("oc_id").Pluck("stack_title", &titles).Error; err != nil ||
+		!slices.Equal(titles, []string{"Web App", ""}) {
+		t.Fatal("renaming a stack titles its members only", titles, err)
+	}
+	if err := service.RenameStack(ctx, "missing", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("only existing stacks are renamed", err)
+	}
+	if err := service.RenameStack(ctx, "", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("containers outside stacks have no stack to rename", err)
 	}
 }

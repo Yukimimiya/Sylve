@@ -12,12 +12,12 @@
 	import * as Dialog from '$lib/components/ui/dialog/index.js';
 	import type { ClusterNode } from '$lib/types/cluster/cluster';
 	import type {
-		BackupGuestRef,
 		BackupGuestScope,
 		BackupJob,
 		BackupJobMode,
 		BackupTarget
 	} from '$lib/types/cluster/backups';
+	import { parseGuestFromDatasetPath } from '$lib/utils/backup-jobs-page-state';
 	import type { Jail } from '$lib/types/jail/jail';
 	import type { VM } from '$lib/types/vm/vm';
 	import { handleAPIError, isAPIResponse, updateCache } from '$lib/utils/http';
@@ -48,6 +48,7 @@
 		selectedJailId: string;
 		selectedVmId: string;
 		pruneKeepLast: string;
+		pruneKeepGenerations: string;
 		pruneTarget: boolean;
 		cronExpr: string;
 		enabled: boolean;
@@ -91,6 +92,7 @@
 		selectedJailId: '',
 		selectedVmId: '',
 		pruneKeepLast: '0',
+		pruneKeepGenerations: '0',
 		pruneTarget: false,
 		cronExpr: '0 * * * *',
 		enabled: true,
@@ -194,26 +196,6 @@
 	let selectedVM = $derived.by(
 		() => vms.find((vm) => vm.id === Number.parseInt(form.selectedVmId || '0', 10)) || null
 	);
-
-	function parseGuestFromDatasetPath(dataset: string): BackupGuestRef {
-		const jailMatch = dataset.match(/(?:^|\/)jails\/(\d+)(?:$|[/.])/);
-		if (jailMatch) {
-			const parsed = Number.parseInt(jailMatch[1], 10);
-			if (!Number.isNaN(parsed) && parsed > 0) {
-				return { kind: 'jail', id: parsed };
-			}
-		}
-
-		const vmMatch = dataset.match(/(?:^|\/)virtual-machines\/(\d+)(?:$|[/.])/);
-		if (vmMatch) {
-			const parsed = Number.parseInt(vmMatch[1], 10);
-			if (!Number.isNaN(parsed) && parsed > 0) {
-				return { kind: 'vm', id: parsed };
-			}
-		}
-
-		return { kind: 'dataset', id: 0 };
-	}
 
 	function invalidateSourceEncryptionCheck(state: SourceEncryptionState = 'idle') {
 		srcEncryptionGeneration += 1;
@@ -339,6 +321,7 @@
 		form.selectedJailId = '';
 		form.selectedVmId = '';
 		form.pruneKeepLast = '0';
+		form.pruneKeepGenerations = '0';
 		form.pruneTarget = false;
 		form.stopBeforeBackup = false;
 		form.recursive = scopedGuest?.kind === 'vm';
@@ -367,6 +350,7 @@
 		form.selectedJailId = '';
 		form.selectedVmId = '';
 		form.pruneKeepLast = String(job.pruneKeepLast ?? 0);
+		form.pruneKeepGenerations = String(job.pruneKeepGenerations ?? 0);
 		form.pruneTarget = !!job.pruneTarget;
 		form.stopBeforeBackup = !!job.stopBeforeBackup;
 		form.recursive = !!job.recursive;
@@ -559,6 +543,14 @@
 			return;
 		}
 
+		const pruneKeepGenerations = Number.parseInt(form.pruneKeepGenerations || '0', 10);
+		if (Number.isNaN(pruneKeepGenerations) || pruneKeepGenerations < 0) {
+			toast.error('Archived generations to keep must be 0 or greater', {
+				position: 'bottom-center'
+			});
+			return;
+		}
+
 		let jailDataset = edit ? selectedJob?.jailRootDataset || selectedJob?.sourceDataset || '' : '';
 		if (form.mode === 'jail') {
 			if (selectedJail) {
@@ -613,6 +605,7 @@
 				form.mode === 'dataset' ? form.sourceDataset : form.mode === 'vm' ? vmDataset : '',
 			jailRootDataset: form.mode === 'jail' ? jailDataset : '',
 			pruneKeepLast,
+			pruneKeepGenerations,
 			pruneTarget: form.pruneTarget,
 			stopBeforeBackup: form.stopBeforeBackup,
 			recursive: form.recursive,
@@ -715,7 +708,7 @@
 
 <Dialog.Root bind:open>
 	<Dialog.Content
-		class="max-h-[90vh] w-[90%] max-w-xl! overflow-y-auto p-6"
+		class="max-h-[90vh] w-[90%] max-w-3xl! overflow-y-auto p-6"
 		showCloseButton={true}
 		showResetButton={edit}
 		onReset={handleReset}
@@ -832,7 +825,7 @@
 				/>
 			</div>
 
-			<div class="-mt-2 grid grid-cols-1 gap-4 md:grid-cols-3">
+			<div class="-mt-2 grid grid-cols-1 gap-4 md:grid-cols-2">
 				{#if form.mode === 'dataset'}
 					<CustomValueInput
 						label="Source Dataset"
@@ -877,12 +870,22 @@
 					bind:value={form.cronExpr}
 					classes="space-y-1"
 				/>
+			</div>
 
+			<div class="grid grid-cols-1 gap-4 md:grid-cols-2">
 				<CustomValueInput
 					label="Keep Last Snapshots"
 					placeholder="20 (0 to disable)"
 					type="number"
 					bind:value={form.pruneKeepLast}
+					classes="space-y-1"
+				/>
+
+				<CustomValueInput
+					label="Keep Archived Generations"
+					placeholder="2 (0 to keep all)"
+					type="number"
+					bind:value={form.pruneKeepGenerations}
 					classes="space-y-1"
 				/>
 			</div>
@@ -989,6 +992,14 @@
 						Target prune:
 						<code class="rounded bg-background px-1"
 							>{form.pruneTarget ? 'Enabled' : 'Disabled'}</code
+						>
+					</li>
+					<li>
+						Archived generations:
+						<code class="rounded bg-background px-1"
+							>{Number.parseInt(form.pruneKeepGenerations || '0', 10) > 0
+								? `Keep newest ${Number.parseInt(form.pruneKeepGenerations || '0', 10)}`
+								: 'Keep all'}</code
 						>
 					</li>
 

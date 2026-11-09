@@ -53,6 +53,7 @@ export const ContainerRestartSchema = z.enum(['no', 'on-failure', 'always', 'unl
 export const ContainerSchema = z.object({
 	ocId: z.number().int(),
 	name: z.string(),
+	title: z.string().catch(''),
 	description: z.string(),
 	pool: z.string(),
 	image: z.string(),
@@ -84,6 +85,9 @@ export const ContainerSchema = z.object({
 	webHttps: z.boolean().catch(false),
 	catalogApp: z.string().catch(''),
 	stack: z.string().catch(''),
+	stackTitle: z.string().catch(''),
+	service: z.string().catch(''),
+	updateDigest: z.string().catch(''),
 	runtimeId: z.string(),
 	creationPending: z.boolean()
 });
@@ -93,9 +97,17 @@ export const ContainerListItemSchema = ContainerSchema.extend({ state: z.string(
 export const SimpleContainerSchema = z.object({
 	ocId: z.number().int(),
 	name: z.string(),
+	title: z.string().catch(''),
 	stack: z.string().catch(''),
-	state: z.string()
+	stackTitle: z.string().catch(''),
+	state: z.string(),
+	update: z.boolean().catch(false)
 });
+
+// containerTitle is the name a container is shown under: its title, or else
+// its name, which is also its hostname and its name on its network.
+export const containerTitle = (container: { name: string; title: string }) =>
+	container.title || container.name;
 
 export const ContainerRuntimeSchema = z.object({
 	state: z.string(),
@@ -131,6 +143,7 @@ export const ContainerStatsBootstrapSchema = z.object({
 export const ContainerImageSchema = z.object({
 	id: z.string(),
 	names: list(z.string()),
+	previous: z.string().catch(''),
 	size: z.number(),
 	created: z.string()
 });
@@ -177,7 +190,14 @@ export type ContainerImage = z.infer<typeof ContainerImageSchema>;
 export type ContainerImageInfo = z.infer<typeof ContainerImageInfoSchema>;
 export type RegistryCredential = z.infer<typeof RegistryCredentialSchema>;
 export type UsedPort = z.infer<typeof UsedPortSchema>;
-export type ContainerAction = 'start' | 'stop' | 'restart' | 'kill';
+export type ContainerAction = 'start' | 'stop' | 'restart' | 'kill' | 'upgrade' | 'upgrade-stack';
+
+export const containerActionLabel = (action: string): string =>
+	({ upgrade: 'Update Image', 'upgrade-stack': 'Update Stack' })[action] ??
+	action
+		.split('-')
+		.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+		.join(' ');
 
 export const restartLabels: Record<ContainerRestart, string> = {
 	no: 'Never',
@@ -193,6 +213,7 @@ export const mountTypeLabels: Record<ContainerMount['type'], string> = {
 };
 
 export interface ContainerSpec {
+	name?: string;
 	image: string;
 	os: '' | 'freebsd' | 'linux';
 	command: string[];
@@ -228,10 +249,14 @@ export interface ContainerCreateRequest extends ContainerSpec {
 	webHttps: boolean;
 	catalogApp: string;
 	stack?: string;
+	title?: string;
+	stackTitle?: string;
+	service?: string;
+	secrets?: Record<string, string>;
 }
 
 export interface ContainerOptions {
-	name?: string;
+	title?: string;
 	description?: string;
 	cores?: number;
 	memory?: number;
@@ -271,6 +296,7 @@ export const emptyContainerSpec = (): ContainerSpec => ({
 });
 
 export const containerSpecOf = (c: Container): ContainerSpec => ({
+	name: c.name,
 	image: c.image,
 	os: c.os === 'freebsd' || c.os === 'linux' ? c.os : '',
 	command: [...c.command],

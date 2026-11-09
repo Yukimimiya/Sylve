@@ -19,10 +19,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/alchemillahq/sylve/internal/assets"
 	"github.com/alchemillahq/sylve/internal/config"
-	clusterModels "github.com/alchemillahq/sylve/internal/db/models/cluster"
 	"github.com/alchemillahq/sylve/internal/logger"
 	"github.com/alchemillahq/sylve/internal/remoteexec"
 	"github.com/alchemillahq/sylve/pkg/utils"
@@ -31,14 +31,6 @@ import (
 var zeltaFS = assets.ZeltaFiles
 
 var ZeltaInstallDir string
-
-func zeltaSnapshotName(prefix string) string {
-	prefix = strings.TrimSpace(prefix)
-	if prefix == "" {
-		prefix = "zl"
-	}
-	return fmt.Sprintf("%s_%s", prefix, compactNowToken())
-}
 
 func GetZeltaInstallDir() (string, error) {
 	if ZeltaInstallDir != "" {
@@ -145,10 +137,6 @@ func zeltaShareDir() string {
 	return filepath.Join(zeltaInstallDir, "share", "zelta")
 }
 
-func runZeltaWithEnv(ctx context.Context, extraEnv []string, args ...string) (string, error) {
-	return runZeltaWithEnvStreaming(ctx, extraEnv, nil, args...)
-}
-
 func runZeltaWithEnvStreaming(
 	ctx context.Context,
 	extraEnv []string,
@@ -157,6 +145,9 @@ func runZeltaWithEnvStreaming(
 ) (string, error) {
 	bin := zeltaBinPath()
 	cmd := exec.CommandContext(ctx, bin, args...)
+	// zelta's zfs and ssh children must die with it on cancel.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -185,10 +176,7 @@ func runZeltaWithEnvStreaming(
 
 	commandKind := "zelta"
 	if len(args) > 0 {
-		switch args[0] {
-		case "backup", "prune", "restore", "match", "report":
-			commandKind += "." + args[0]
-		}
+		commandKind += "." + args[0]
 	}
 	logger.L.Debug().Str("command_kind", commandKind).Msg("exec_zelta_with_env")
 
@@ -290,48 +278,6 @@ func isBenignPipeReadError(err error) bool {
 
 	return strings.Contains(lower, "file already closed") ||
 		strings.Contains(lower, "use of closed file")
-}
-
-func (s *Service) DestroySnapshots(ctx context.Context, snapshots []string) error {
-	for _, snapshot := range snapshots {
-		snap, err := remoteexec.ParseZFSSnapshot(snapshot)
-		if err != nil {
-			continue
-		}
-		if err := s.destroyLocalDataset(ctx, snap.String(), false); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (s *Service) DestroyTargetSnapshotsByName(ctx context.Context, target *clusterModels.BackupTarget, targetSnapshots []string) error {
-	_, root, err := canonicalizeBackupTarget(target)
-	if err != nil {
-		return err
-	}
-	for _, targetSnapshot := range targetSnapshots {
-		snapshot, err := remoteexec.ParseZFSSnapshot(targetSnapshot)
-		if err != nil || !snapshot.Dataset().Within(root) {
-			continue
-		}
-		snap := snapshot.String()
-
-		out, err := s.runTargetSSH(ctx, target, "zfs", "destroy", snap)
-		if err != nil {
-			if isRemoteSubcommandBlocked(out) {
-				logger.L.Warn().
-					Str("ssh_host", target.SSHHost).
-					Str("dataset", remoteDatasetForLog(snapshot.Dataset().String())).
-					Msg("remote_zfs_destroy_not_permitted")
-				return fmt.Errorf("remote_zfs_destroy_not_permitted: %w", err)
-			}
-			return err
-		}
-	}
-
-	return nil
 }
 
 func isValidZFSSnapshotName(name string) bool {

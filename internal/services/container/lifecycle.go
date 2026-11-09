@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -26,7 +27,7 @@ import (
 	"github.com/dustin/go-humanize"
 )
 
-var Actions = []string{"create", "create-stack", "start", "stop", "restart", "kill", "update", "delete"}
+var Actions = []string{"create", "create-stack", "start", "stop", "restart", "kill", "update", "upgrade", "upgrade-stack", "delete"}
 
 func (s *Service) ValidateTask(ctx context.Context, ocid uint, action, payload string) error {
 	switch action {
@@ -95,6 +96,10 @@ func (s *Service) ExecuteTask(ctx context.Context, ocid uint, action, payload st
 			return fmt.Errorf("invalid_container_update_payload: %w", err)
 		}
 		return s.Update(ctx, ocid, spec)
+	case "upgrade":
+		return s.updateImage(ctx, ocid)
+	case "upgrade-stack":
+		return s.upgradeStack(ctx, ocid)
 	case "delete":
 		var req containerServiceInterfaces.DeleteRequest
 		if payload != "" {
@@ -112,6 +117,12 @@ func (s *Service) Create(ctx context.Context, req containerServiceInterfaces.Cre
 	if err := s.ValidateCreate(ctx, req); err != nil {
 		return err
 	}
+	data := containerModels.VolumesDataset(req.Pool, req.OCID)
+	if req.Stack == "" && len(req.Secrets) > 0 {
+		creates := []containerServiceInterfaces.CreateRequest{req}
+		restoreSecrets(creates, readKeptSecrets(s.dataDirs(ctx, data)))
+		req = creates[0]
+	}
 	spec, network, err := s.normalizeSpec(ctx, req.Spec)
 	if err != nil {
 		return err
@@ -128,9 +139,10 @@ func (s *Service) Create(ctx context.Context, req containerServiceInterfaces.Cre
 		}
 	}()
 
-	record := containerModels.Container{OCID: req.OCID, Name: req.Name, Description: req.Description, Pool: req.Pool,
+	record := containerModels.Container{OCID: req.OCID, Name: req.Name, Title: req.Title, Description: req.Description, Pool: req.Pool,
 		Cores: req.Cores, Memory: req.Memory, StartAtBoot: req.StartAtBoot, StartOrder: req.StartOrder,
-		WebPort: req.WebPort, WebHTTPS: req.WebHTTPS, CatalogApp: req.CatalogApp, Stack: req.Stack, CreationPending: true}
+		WebPort: req.WebPort, WebHTTPS: req.WebHTTPS, CatalogApp: req.CatalogApp, Stack: req.Stack, StackTitle: req.StackTitle,
+		Service: req.Service, CreationPending: true}
 	applySpec(&record, spec, network)
 	if err := s.DB.WithContext(ctx).Omit("Network").Create(&record).Error; err != nil {
 		return err
@@ -180,6 +192,11 @@ func (s *Service) Create(ctx context.Context, req containerServiceInterfaces.Cre
 		reservation = nil
 	}
 	s.changed(record.OCID)
+	if req.Stack == "" {
+		if keepErr := writeKeptSecrets(s.dataDirs(ctx, data), req.Secrets); keepErr != nil {
+			logger.L.Warn().Err(keepErr).Uint("ocid", record.OCID).Msg("container_secrets_not_kept")
+		}
+	}
 
 	if req.StartAfterCreate {
 		err = s.start(ctx, record)
@@ -209,15 +226,13 @@ func (s *Service) ensureImage(ctx context.Context, record *containerModels.Conta
 }
 
 func (s *Service) pullImage(ctx context.Context, pool, image, system string) error {
-	root, err := s.pullsRoot(ctx, pool)
+	downloads, err := s.downloads(ctx, pool)
 	if err != nil {
 		return err
 	}
-	downloads, err := os.MkdirTemp(root, ".pull-")
-	if err != nil {
+	if err := os.MkdirAll(downloads, 0o700); err != nil {
 		return err
 	}
-	defer os.RemoveAll(downloads)
 	defer reportPull(ctx, image, downloads)()
 
 	candidates := []string{system}
@@ -225,19 +240,47 @@ func (s *Service) pullImage(ctx context.Context, pool, image, system string) err
 		candidates = []string{"freebsd", "linux"}
 	}
 	for _, candidate := range candidates {
-		if _, err = s.podman(ctx, pool, []string{"TMPDIR=" + downloads}, "pull", "--platform", candidate+"/"+runtime.GOARCH, image); err == nil {
+		query := url.Values{"reference": {image}, "os": {candidate}, "arch": {runtime.GOARCH}, "policy": {"always"}}
+		if err = s.pull(ctx, pool, query); err == nil {
 			return nil
 		}
 	}
 	return err
 }
 
-func (s *Service) pullsRoot(ctx context.Context, pool string) (string, error) {
+// pull goes through the pool's service: podman processes pulling side by side
+// force-unmount and clean up layers the others are still writing.
+func (s *Service) pull(ctx context.Context, pool string, query url.Values) error {
+	response, err := s.request(ctx, pool, "pull", http.MethodPost, "/images/pull?"+query.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	decoder := json.NewDecoder(response.Body)
+	for {
+		var report struct {
+			Error string `json:"error"`
+		}
+		if err := decoder.Decode(&report); err == io.EOF {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("podman_pull_failed: %w", err)
+		}
+		if report.Error != "" {
+			return fmt.Errorf("podman_pull_failed: %s", report.Error)
+		}
+	}
+}
+
+// downloads is where the pool's service keeps the layers it's pulling: on the
+// pool, as images outgrow /var/tmp.
+func (s *Service) downloads(ctx context.Context, pool string) (string, error) {
 	dataset, err := s.GZFS.ZFS.Get(ctx, pool+"/"+path.Dir(containerModels.ImagesDataset), false)
 	if err != nil {
 		return "", err
 	}
-	return storagezfs.FilesystemMountpoint(dataset)
+	root, err := storagezfs.FilesystemMountpoint(dataset)
+	return filepath.Join(root, ".pull-downloads"), err
 }
 
 func reportPull(ctx context.Context, image, downloads string) func() {
@@ -368,8 +411,16 @@ func (s *Service) Update(ctx context.Context, ocid uint, spec containerServiceIn
 	if err != nil {
 		return err
 	}
+	if spec.Name != "" && spec.Name != previous.Name {
+		if err := s.validateName(ctx, spec.Name, previous.ID); err != nil {
+			return err
+		}
+	}
 	updated := previous
 	applySpec(&updated, spec, network)
+	if spec.PullImage {
+		updated.UpdateDigest = ""
+	}
 	if err := s.ensurePool(ctx, updated.Pool); err != nil {
 		return err
 	}
@@ -418,6 +469,12 @@ func (s *Service) Update(ctx context.Context, ocid uint, spec containerServiceIn
 }
 
 func (s *Service) Delete(ctx context.Context, ocid uint, deleteVolumes bool) error {
+	return s.delete(ctx, ocid, deleteVolumes, deleteVolumes)
+}
+
+// delete removes the container, with its volumes if asked, and with folders its
+// stack's folders once no other member uses them.
+func (s *Service) delete(ctx context.Context, ocid uint, deleteVolumes, folders bool) error {
 	record, err := s.record(ctx, ocid)
 	if err != nil {
 		return err
@@ -451,6 +508,11 @@ func (s *Service) Delete(ctx context.Context, ocid uint, deleteVolumes bool) err
 		return err
 	}
 	s.changed(ocid)
+	if folders {
+		if err := s.destroyStackFolders(ctx, record.Pool, record.Stack); err != nil {
+			return fmt.Errorf("failed_to_delete_stack_folders: %w", err)
+		}
+	}
 	if err := s.RemoveEmptyStack(ctx, record.Stack); err != nil {
 		logger.L.Warn().Err(err).Str("stack", record.Stack).Msg("container_stack_network_not_removed")
 	}

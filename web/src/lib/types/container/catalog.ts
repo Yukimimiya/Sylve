@@ -33,6 +33,7 @@ export const CatalogVariableSchema = z.object({
 	label: z.string(),
 	hint: z.string().catch(''),
 	type: z.string(),
+	placeholder: z.string().catch(''),
 	default: z.string(),
 	optional: z.boolean(),
 	advanced: z.boolean(),
@@ -40,6 +41,7 @@ export const CatalogVariableSchema = z.object({
 	owner: z.string().catch(''),
 	protocol: z.string().catch(''),
 	target: z.string().catch(''),
+	folders: z.array(z.string()).catch([]),
 	values: z
 		.record(z.string(), z.string())
 		.nullish()
@@ -67,11 +69,13 @@ export const CatalogTemplateSchema = z.object({
 	app: CatalogAppSchema,
 	variables: list(CatalogVariableSchema),
 	choices: list(CatalogChoiceSchema),
-	containers: list(z.string())
+	containers: list(z.string()),
+	stack: z.string().catch('')
 });
 
 export const CatalogRenderedSchema = ContainerSchema.pick({
 	name: true,
+	title: true,
 	description: true,
 	image: true,
 	env: true,
@@ -85,11 +89,14 @@ export const CatalogRenderedSchema = ContainerSchema.pick({
 	webPort: true,
 	webHttps: true,
 	catalogApp: true,
-	stack: true
+	stack: true,
+	stackTitle: true,
+	service: true
 }).extend({
 	os: z.enum(['', 'freebsd', 'linux']).catch(''),
 	network: z.string(),
-	startAfterCreate: z.boolean().catch(true)
+	startAfterCreate: z.boolean().catch(true),
+	secrets: z.record(z.string(), z.string()).catch({})
 });
 
 export const CatalogPlanSchema = z.object({

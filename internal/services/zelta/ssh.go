@@ -28,6 +28,7 @@ import (
 	"github.com/alchemillahq/sylve/internal/logger"
 	"github.com/alchemillahq/sylve/internal/remoteexec"
 	"github.com/alchemillahq/sylve/pkg/utils"
+	"golang.org/x/sys/cpu"
 )
 
 var SSHKeyDirectory string
@@ -265,14 +266,6 @@ func (s *Service) targetSSHKeyPath(target *clusterModels.BackupTarget) (string, 
 	}
 
 	return stored, nil
-}
-
-func (s *Service) resolvedSSHKeyPath(target *clusterModels.BackupTarget) string {
-	path, err := s.targetSSHKeyPath(target)
-	if err != nil {
-		return strings.TrimSpace(target.SSHKeyPath)
-	}
-	return path
 }
 
 func (s *Service) materializeBackupTargetSSHKeyLocked(target *clusterModels.BackupTarget) error {
@@ -934,6 +927,14 @@ func remoteDatasetForLog(dataset string) string {
 	return strings.Join(parts, "/")
 }
 
+// AES-GCM is ~2x chacha20 with AES-NI; "^" keeps every default cipher allowed.
+var sshCipherPreference = func() string {
+	if (cpu.X86.HasAES && cpu.X86.HasPCLMULQDQ) || (cpu.ARM64.HasAES && cpu.ARM64.HasPMULL) {
+		return "Ciphers=^aes128-gcm@openssh.com"
+	}
+	return "Ciphers=^chacha20-poly1305@openssh.com"
+}()
+
 func (s *Service) buildSSHArgs(target *clusterModels.BackupTarget) ([]string, error) {
 	trust, err := s.targetSSHHostTrust(target)
 	if err != nil {
@@ -967,6 +968,7 @@ func (s *Service) buildSSHArgs(target *clusterModels.BackupTarget) ([]string, er
 		"-o", "LogLevel=ERROR",
 		"-o", "ConnectTimeout=3",
 		"-o", "ConnectionAttempts=1",
+		"-o", sshCipherPreference,
 	)
 
 	if target.SSHPort != 0 && target.SSHPort != 22 {

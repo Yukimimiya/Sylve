@@ -20,10 +20,12 @@
 	import { reload } from '$lib/stores/api.svelte';
 	import { confirmGuestAction } from '$lib/stores/guest-actions.svelte';
 	import type { GFSStep } from '$lib/types/common';
-	import type {
-		ContainerAction,
-		ContainerContext,
-		ContainerDetail
+	import {
+		containerActionLabel,
+		containerTitle,
+		type ContainerAction,
+		type ContainerContext,
+		type ContainerDetail
 	} from '$lib/types/container/container';
 	import { getAPIErrorText, isAPIResponse, removeCache, updateCache } from '$lib/utils/http';
 	import { toastContainerError } from '$lib/utils/container/errors';
@@ -156,9 +158,9 @@
 			!(await confirmGuestAction({
 				guestType: 'container',
 				guestId: current.ocId,
-				name: current.name,
+				name: containerTitle(current),
 				hostname: data.node,
-				action
+				action: action === 'upgrade' || action === 'upgrade-stack' ? 'update' : action
 			}))
 		)
 			return;
@@ -176,7 +178,8 @@
 	async function remove() {
 		deleteDialog.open = false;
 		inFlight = true;
-		const { ocId, name, stack } = current;
+		const { ocId, stack, stackTitle } = current;
+		const name = containerTitle(current);
 		const whole = deleteDialog.stack && stackMembers.current.length > 1;
 		const ocIds = whole ? stackMembers.current.map((member) => member.ocId) : [ocId];
 		for (const member of ocIds) {
@@ -189,9 +192,12 @@
 			await removeCache(`container-${member}`, data.node);
 		}
 		inFlight = false;
-		toast.success(whole ? `Stack ${stack} deletion queued` : `Container ${name} deletion queued`, {
-			position: 'bottom-center'
-		});
+		toast.success(
+			whole ? `Stack ${stackTitle || stack} deletion queued` : `Container ${name} deletion queued`,
+			{
+				position: 'bottom-center'
+			}
+		);
 		reload.leftPanel = true;
 		await useSafeGoto(`/${data.node}/summary`);
 	}
@@ -208,7 +214,7 @@
 						<span class="icon-[mdi--close-circle] text-gray-500"></span>
 					{/if}
 				</Badge>
-				<p class="truncate text-sm font-semibold">{current.name} ({current.ocId})</p>
+				<p class="truncate text-sm font-semibold">{containerTitle(current)} ({current.ocId})</p>
 			</div>
 		{/if}
 
@@ -216,7 +222,7 @@
 			{#if pendingAction}
 				<Badge variant="outline" class="px-1.5 text-xs">
 					<span class="icon-[mdi--loading] mr-1 h-3 w-3 animate-spin"></span>
-					{pendingAction.charAt(0).toUpperCase() + pendingAction.slice(1)}
+					{containerActionLabel(pendingAction)}
 				</Badge>
 			{:else if running}
 				{#each [['restart', 'icon-[mdi--restart]', 'Restart'], ['stop', 'icon-[mdi--stop]', 'Stop'], ['kill', 'icon-[mdi--skull-outline]', 'Kill']] as [action, icon, title] (action)}
@@ -268,6 +274,22 @@
 						/>
 					</Button>
 				{/if}
+				{#if current.updateDigest && !pendingAction}
+					<Button
+						onclick={() => act('upgrade')}
+						disabled={inFlight}
+						size="sm"
+						title="A newer {current.image} is available"
+						class="bg-muted-foreground/40 dark:bg-muted h-6 text-black hover:bg-blue-600 dark:text-white"
+					>
+						<SpanWithIcon
+							icon="icon-[mdi--arrow-up-circle-outline]"
+							size="h-4 w-4"
+							gap="gap-1"
+							title="Update"
+						/>
+					</Button>
+				{/if}
 				<Button
 					size="sm"
 					onclick={() => (summaryBar.showLogs = true)}
@@ -314,11 +336,11 @@
 			<AlertDialog.Title>Are you sure?</AlertDialog.Title>
 			<AlertDialog.Description>
 				This will permanently delete the container
-				<span class="font-semibold">{current.name} ({current.ocId}).</span>
+				<span class="font-semibold">{containerTitle(current)} ({current.ocId}).</span>
 				{#if stackMembers.current.length > 1}
 					<CustomCheckbox
-						label="Delete the whole {current.stack} stack ({stackMembers.current
-							.length} containers)"
+						label="Delete the whole {current.stackTitle || current.stack} stack ({stackMembers
+							.current.length} containers)"
 						bind:checked={deleteDialog.stack}
 						classes="mt-4 flex items-center gap-2"
 					/>
